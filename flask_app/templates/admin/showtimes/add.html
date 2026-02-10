@@ -1,0 +1,68 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Add Showtime - Admin{% endblock %}
+
+{% block admin_content %}
+<div class="mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb mb-2">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin_showtimes') }}" class="text-decoration-none">Showtimes</a></li>
+            <li class="breadcrumb-item active">Add Showtime</li>
+        </ol>
+    </nav>
+    <h2 class="fw-bold">Add New Showtime</h2>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-body p-4">
+                <form method="POST" action="{{ url_for('admin_add_showtime') }}">
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Select Movie *</label>
+                        <select class="form-select" name="movie_id" required>
+                            <option value="">Choose a movie</option>
+                            {% for movie in movies %}
+                                <option value="{{ movie.id }}">{{ movie.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Select Cinema *</label>
+                        <select class="form-select" name="cinema_id" required>
+                            <option value="">Choose a cinema</option>
+                            {% for cinema in cinemas %}
+                                <option value="{{ cinema.id }}">{{ cinema.name }} ({{ cinema.total_seats }} seats)</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Show Date *</label>
+                            <input type="date" class="form-control" name="show_date" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Show Time *</label>
+                            <input type="time" class="form-control" name="show_time" required>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Ticket Price (₱) *</label>
+                        <input type="number" class="form-control" name="price" step="0.01" min="0" placeholder="12.99" required>
+                    </div>
+                    
+                    <div class="d-flex gap-3">
+                        <button type="submit" class="btn btn-primary px-4">
+                            <i class="bi bi-check-lg me-2"></i>Add Showtime
+                        </button>
+                        <a href="{{ url_for('admin_showtimes') }}" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

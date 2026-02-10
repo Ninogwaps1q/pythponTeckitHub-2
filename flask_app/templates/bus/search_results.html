@@ -1,0 +1,176 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ origin }} to {{ destination }} - Bus Tickets - TicketHub{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<section class="py-4" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-lg-8">
+                <nav aria-label="breadcrumb">
+                    <ol class="breadcrumb mb-2">
+                        <li class="breadcrumb-item"><a href="{{ url_for('search_bus') }}" class="text-white-50">Bus Search</a></li>
+                        <li class="breadcrumb-item active text-white">Results</li>
+                    </ol>
+                </nav>
+                <h2 class="text-white fw-bold mb-1">{{ origin }} <i class="bi bi-arrow-right mx-2"></i> {{ destination }}</h2>
+                <p class="text-white-50 mb-0">
+                    <i class="bi bi-calendar3 me-2"></i>{{ travel_date }}
+                    <span class="mx-2">|</span>
+                    <span>{{ routes|length }} bus(es) found</span>
+                </p>
+            </div>
+            <div class="col-lg-4 text-lg-end mt-3 mt-lg-0">
+                <a href="{{ url_for('search_bus') }}" class="btn btn-outline-light">
+                    <i class="bi bi-search me-2"></i>Modify Search
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Results -->
+<section class="py-5">
+    <div class="container">
+        <div class="row g-4">
+            <!-- Filters Sidebar -->
+            <div class="col-lg-3">
+                <div class="card sticky-top" style="top: 100px;">
+                    <div class="card-body p-4">
+                        <h6 class="fw-bold mb-4">Filters</h6>
+                        
+                        <div class="mb-4">
+                            <label class="form-label fw-semibold">Bus Type</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="typeAC" checked>
+                                <label class="form-check-label" for="typeAC">AC</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="typeNonAC" checked>
+                                <label class="form-check-label" for="typeNonAC">Non-AC</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="typeSleeper" checked>
+                                <label class="form-check-label" for="typeSleeper">Sleeper</label>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="form-label fw-semibold">Departure Time</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" checked>
+                                <label class="form-check-label">Morning (6AM - 12PM)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" checked>
+                                <label class="form-check-label">Afternoon (12PM - 6PM)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" checked>
+                                <label class="form-check-label">Evening (6PM - 12AM)</label>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label class="form-label fw-semibold">Price Range</label>
+                            <input type="range" class="form-range" min="0" max="200" value="200">
+                            <div class="d-flex justify-content-between text-muted small">
+                                <span>₱0</span>
+                                <span>₱200</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Results List -->
+            <div class="col-lg-9">
+                {% if routes %}
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <p class="mb-0 text-muted">Showing {{ routes|length }} buses</p>
+                        <select class="form-select form-select-sm w-auto">
+                            <option>Sort by: Price (Low to High)</option>
+                            <option>Sort by: Price (High to Low)</option>
+                            <option>Sort by: Departure Time</option>
+                            <option>Sort by: Duration</option>
+                        </select>
+                    </div>
+                    
+                    {% for route in routes %}
+                    <div class="card bus-card mb-3">
+                        <div class="card-body p-4">
+                            <div class="row align-items-center">
+                                <div class="col-lg-7">
+                                    <div class="d-flex align-items-center gap-4">
+                                        <!-- Departure -->
+                                        <div class="text-center">
+                                            <div class="fw-bold fs-4">{{ route.departure_time.strftime('%H:%M') }}</div>
+                                            <div class="text-muted">{{ route.origin }}</div>
+                                        </div>
+                                        
+                                        <!-- Journey Line -->
+                                        <div class="flex-grow-1">
+                                            <div class="text-center text-muted small mb-1">{{ route.duration or '---' }}</div>
+                                            <div class="position-relative">
+                                                <hr class="my-0" style="border-top: 2px dashed var(--gray-300);">
+                                                <i class="bi bi-bus-front position-absolute top-50 start-50 translate-middle bg-white px-2 text-primary"></i>
+                                            </div>
+                                            <div class="text-center text-muted small mt-1">Direct</div>
+                                        </div>
+                                        
+                                        <!-- Arrival -->
+                                        <div class="text-center">
+                                            <div class="fw-bold fs-4">{{ route.arrival_time.strftime('%H:%M') }}</div>
+                                            <div class="text-muted">{{ route.destination }}</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="mt-3 d-flex gap-2 flex-wrap">
+                                        <span class="badge rounded-pill bg-light text-dark">
+                                            <i class="bi bi-bus-front me-1"></i>{{ route.bus_operator or 'Express' }}
+                                        </span>
+                                        {% if route.bus_type %}
+                                            <span class="badge rounded-pill bg-light text-dark">{{ route.bus_type }}</span>
+                                        {% endif %}
+                                        {% if route.amenities %}
+                                            {% for amenity in route.amenities.split(',')[:3] %}
+                                                <span class="badge rounded-pill bg-light text-dark">{{ amenity.strip() }}</span>
+                                            {% endfor %}
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                
+                                <div class="col-lg-5 mt-4 mt-lg-0">
+                                    <div class="d-flex justify-content-lg-end align-items-center gap-4">
+                                        <div class="text-lg-end">
+                                            <div class="text-muted small">Starting from</div>
+                                            <div class="fw-bold fs-3" style="color: var(--primary);">
+                                                ₱{{ "%.2f"|format(route.price) }}
+                                            </div>
+                                            <div class="text-muted small">{{ route.total_seats }} seats available</div>
+                                        </div>
+                                        <a href="{{ url_for('book_bus', route_id=route.id, date=travel_date) }}" class="btn btn-primary px-4 py-2">
+                                            Select Seats
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="text-center py-5 bg-white rounded-4">
+                        <i class="bi bi-bus-front text-muted" style="font-size: 5rem;"></i>
+                        <h4 class="mt-4">No buses found</h4>
+                        <p class="text-muted">We couldn't find any buses for this route. Try different dates or cities.</p>
+                        <a href="{{ url_for('search_bus') }}" class="btn btn-primary">
+                            <i class="bi bi-search me-2"></i>Search Again
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

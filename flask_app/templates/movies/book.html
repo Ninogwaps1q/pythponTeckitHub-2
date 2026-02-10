@@ -1,0 +1,291 @@
+{% extends 'base.html' %}
+
+{% block title %}Book Tickets - {{ showtime.movie.title }} - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-5" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
+    <div class="container">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-3">
+                <li class="breadcrumb-item"><a href="{{ url_for('movies') }}" class="text-white-50">Movies</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('movie_detail', movie_id=showtime.movie.id) }}" class="text-white-50">{{ showtime.movie.title }}</a></li>
+                <li class="breadcrumb-item active text-white">Book Tickets</li>
+            </ol>
+        </nav>
+        <h1 class="text-white fw-bold">Select Your Seats</h1>
+    </div>
+</section>
+
+<section class="py-5">
+    <div class="container">
+        <div class="row g-4">
+            <!-- Seat Selection -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-body p-4">
+                        <h5 class="fw-bold mb-4">Choose Your Seats</h5>
+                        
+                        <!-- Screen Indicator -->
+                        <div class="text-center mb-5">
+                            <div class="py-2 px-5 bg-secondary text-white rounded-pill d-inline-block mb-2">
+                                <i class="bi bi-display me-2"></i>SCREEN
+                            </div>
+                        </div>
+                        
+                        <!-- Seat Grid -->
+                        <div class="seat-grid mb-4" id="seatGrid">
+                            {% set cols = 10 %}
+                            {% set rows = ((showtime.available_seats + cols - 1) // cols)|int if showtime.available_seats > 0 else 1 %}
+                            {% for row in range(1, rows + 1) %}
+                                {% for col in range(1, cols + 1) %}
+                                    {% set seat_num = row|string ~ '-' ~ col|string %}
+                                    <div class="seat" data-seat="{{ seat_num }}" data-row="{{ row }}" data-col="{{ col }}">
+                                        {{ col }}
+                                    </div>
+                                {% endfor %}
+                            {% endfor %}
+                        </div>
+                        
+                        <!-- Legend -->
+                        <div class="d-flex justify-content-center gap-4 mt-4">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="seat" style="width: 30px; height: 30px; cursor: default;"></div>
+                                <span class="text-muted small">Available</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="seat selected" style="width: 30px; height: 30px; cursor: default;"></div>
+                                <span class="text-muted small">Selected</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="seat booked" style="width: 30px; height: 30px; cursor: default;"></div>
+                                <span class="text-muted small">Booked</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Booking Summary -->
+            <div class="col-lg-4">
+                <div class="card sticky-top" style="top: 100px;">
+                    <div class="card-body p-4">
+                        <h5 class="fw-bold mb-4">Booking Summary</h5>
+                        
+                        <div class="d-flex gap-3 mb-4">
+                            {% if showtime.movie.poster_image %}
+                                <img src="{{ url_for('static', filename='uploads/' + showtime.movie.poster_image) }}" class="rounded" style="width: 80px; height: 100px; object-fit: cover;">
+                            {% else %}
+                                <div class="bg-secondary rounded d-flex align-items-center justify-content-center" style="width: 80px; height: 100px;">
+                                    <i class="bi bi-film text-white"></i>
+                                </div>
+                            {% endif %}
+                            <div>
+                                <h6 class="fw-bold mb-1">{{ showtime.movie.title }}</h6>
+                                <p class="text-muted small mb-1">{{ showtime.cinema.name }}</p>
+                                <p class="text-muted small mb-0">
+                                    {{ showtime.show_date.strftime('%b %d, %Y') }} | {{ showtime.show_time.strftime('%I:%M %p') }}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <hr>
+                        
+                        <form method="POST" action="{{ url_for('book_movie', showtime_id=showtime.id) }}" id="bookingForm">
+                            <input type="hidden" name="seat_numbers" id="selectedSeatsInput">
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Number of Tickets</label>
+                                <select class="form-select" name="num_tickets" id="numTickets">
+                                    {% set max_tickets = showtime.available_seats if showtime.available_seats > 0 else 1 %}
+                                    {% for i in range(1, max_tickets + 1) %}
+                                        <option value="{{ i }}">{{ i }} {% if i == 1 %}Ticket{% else %}Tickets{% endif %}</option>
+                                    {% endfor %}
+                                </select>
+                                <small class="text-muted d-block mt-1">
+                                    <i class="bi bi-info-circle"></i> {{ showtime.available_seats }} seats available in {{ showtime.cinema.name }}
+                                </small>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Selected Seats</label>
+                                <div class="form-control bg-light" id="selectedSeatsDisplay" style="min-height: 44px;">
+                                    <span class="text-muted">Click on seats to select</span>
+                                </div>
+                                <!-- Validation Error Message -->
+                                <div id="validationError" class="invalid-feedback d-block mt-2" style="display: none; color: #dc3545;">
+                                    <i class="bi bi-exclamation-circle"></i> Please select <span id="requiredCount">1</span> seat(s) to match your ticket(s)
+                                </div>
+                            </div>
+                            
+                            <hr>
+                            
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Price per ticket</span>
+                                <span>₱{{ "%.2f"|format(showtime.price) }}</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Tickets</span>
+                                <span id="ticketCount">1</span>
+                            </div>
+                            <hr>
+                            <div class="d-flex justify-content-between mb-4">
+                                <span class="fw-bold">Total</span>
+                                <span class="fw-bold fs-5" style="color: var(--primary);" id="totalPrice">₱{{ "%.2f"|format(showtime.price) }}</span>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-primary w-100 py-3" id="submitBtn" disabled>
+                                Proceed to Payment <i class="bi bi-arrow-right ms-2"></i>
+                            </button>
+                            <!-- Submit Error Message -->
+                            <div id="submitError" class="alert alert-danger mt-2" role="alert" style="display: none;">
+                                <i class="bi bi-exclamation-triangle"></i> <span id="submitErrorText"></span>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const pricePerTicket = {{ showtime.price }};
+    const availableSeats = {{ showtime.available_seats }};
+    const selectedSeats = [];
+    const bookedSeats = [];
+    
+    // Fetch booked seats for this showtime
+    fetch('/get-booked-seats', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            showtime_id: {{ showtime.id }}
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.booked_seats) {
+            data.booked_seats.forEach(seat => {
+                bookedSeats.push(seat);
+                const seatElement = document.querySelector(`.seat[data-seat="${seat}"]`);
+                if (seatElement) {
+                    seatElement.classList.add('booked');
+                }
+            });
+        }
+    })
+    .catch(error => console.error('Error fetching booked seats:', error));
+    
+    // Validation function
+    function validateSeats() {
+        const numTickets = parseInt(document.getElementById('numTickets').value);
+        const seatsSelected = selectedSeats.length;
+        const isValid = seatsSelected === numTickets;
+        
+        // Update error message
+        document.getElementById('requiredCount').textContent = numTickets;
+        const validationError = document.getElementById('validationError');
+        
+        if (seatsSelected > 0 && seatsSelected < numTickets) {
+            validationError.style.display = 'block';
+        } else if (seatsSelected === 0) {
+            validationError.style.display = 'block';
+        } else {
+            validationError.style.display = 'none';
+        }
+        
+        // Enable/disable submit button
+        const submitBtn = document.getElementById('submitBtn');
+        if (isValid && seatsSelected > 0) {
+            submitBtn.disabled = false;
+        } else {
+            submitBtn.disabled = true;
+        }
+        
+        return isValid;
+    }
+    
+    // Form submission validation
+    document.getElementById('bookingForm').addEventListener('submit', function(e) {
+        if (!validateSeats()) {
+            e.preventDefault();
+            const submitError = document.getElementById('submitError');
+            const submitErrorText = document.getElementById('submitErrorText');
+            const numTickets = parseInt(document.getElementById('numTickets').value);
+            
+            submitErrorText.textContent = `Please select exactly ${numTickets} seat(s) before proceeding. Currently selected: ${selectedSeats.length}`;
+            submitError.style.display = 'block';
+            
+            // Scroll to error message
+            submitError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return false;
+        }
+    });
+    
+    // Seat selection
+    document.querySelectorAll('.seat:not(.booked)').forEach(seat => {
+        seat.addEventListener('click', function() {
+            // Check if seat is booked (in case it was just booked)
+            if (this.classList.contains('booked')) {
+                alert('This seat is no longer available');
+                return;
+            }
+            
+            const seatNum = this.getAttribute('data-seat');
+            const numTickets = parseInt(document.getElementById('numTickets').value);
+            
+            if (this.classList.contains('selected')) {
+                this.classList.remove('selected');
+                const index = selectedSeats.indexOf(seatNum);
+                if (index > -1) selectedSeats.splice(index, 1);
+            } else if (selectedSeats.length < numTickets) {
+                this.classList.add('selected');
+                selectedSeats.push(seatNum);
+            } else {
+                alert('You can only select ' + numTickets + ' seats');
+            }
+            
+            updateDisplay();
+        });
+    });
+    
+    // Update tickets
+    document.getElementById('numTickets').addEventListener('change', function() {
+        const numTickets = parseInt(this.value);
+        
+        // Deselect extra seats if needed
+        while (selectedSeats.length > numTickets) {
+            const seatNum = selectedSeats.pop();
+            document.querySelector(`.seat[data-seat="${seatNum}"]`).classList.remove('selected');
+        }
+        
+        updateDisplay();
+    });
+    
+    function updateDisplay() {
+        const numTickets = parseInt(document.getElementById('numTickets').value);
+        document.getElementById('ticketCount').textContent = numTickets;
+        document.getElementById('totalPrice').textContent = '₱' + (numTickets * pricePerTicket).toFixed(2);
+        
+        if (selectedSeats.length > 0) {
+            document.getElementById('selectedSeatsDisplay').innerHTML = selectedSeats.map(s => 
+                `<span class="badge bg-primary me-1">${s}</span>`
+            ).join('');
+        } else {
+            document.getElementById('selectedSeatsDisplay').innerHTML = '<span class="text-muted">Click on seats to select</span>';
+        }
+        
+        document.getElementById('selectedSeatsInput').value = selectedSeats.join(',');
+        
+        // Run validation after display update
+        validateSeats();
+    }
+    
+    // Initial validation
+    validateSeats();
+</script>
+{% endblock %}

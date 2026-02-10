@@ -1,0 +1,164 @@
+{% extends 'base.html' %}
+
+{% block title %}Search Bus Tickets - TicketHub{% endblock %}
+
+{% block content %}
+<!-- Hero -->
+<section class="py-5" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-lg-6">
+                <h1 class="text-white fw-bold mb-3">Book Bus Tickets</h1>
+                <p class="text-white-50">Travel comfortably with our trusted bus partners</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="container">
+    <!-- Search Box -->
+    <div class="search-box">
+        <form action="{{ url_for('search_bus') }}" method="POST">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">From</label>
+                    <div class="input-group">
+                        <span class="input-group-text bg-white border-end-0">
+                            <i class="bi bi-geo-alt text-muted"></i>
+                        </span>
+                        <input type="text" class="form-control border-start-0" name="origin" placeholder="Departure City" required>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">To</label>
+                    <div class="input-group">
+                        <span class="input-group-text bg-white border-end-0">
+                            <i class="bi bi-geo-alt-fill text-muted"></i>
+                        </span>
+                        <input type="text" class="form-control border-start-0" name="destination" placeholder="Arrival City" required>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Travel Date</label>
+                    <div class="input-group">
+                        <span class="input-group-text bg-white border-end-0">
+                            <i class="bi bi-calendar3 text-muted"></i>
+                        </span>
+                        <input type="date" class="form-control border-start-0" name="travel_date" id="travelDate" required>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-primary w-100 py-3">
+                        <i class="bi bi-search me-2"></i>Search Buses
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Popular Routes -->
+<section class="py-5">
+    <div class="container">
+        <div class="section-header">
+            <h2>Popular Routes</h2>
+            <p>Most searched bus routes this month</p>
+        </div>
+        
+        <div class="row g-4">
+            <div class="col-md-6 col-lg-3">
+                <div class="card text-center p-4 h-100">
+                    <i class="bi bi-bus-front mb-3" style="font-size: 2.5rem; color: var(--primary);"></i>
+                    <h6 class="fw-bold">Naga - Talisay</h6>
+                    <p class="text-muted small mb-2">4h 30min | Daily buses</p>
+                    <span class="fw-bold" style="color: var(--primary);">From ₱29</span>
+                </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+                <div class="card text-center p-4 h-100">
+                    <i class="bi bi-bus-front mb-3" style="font-size: 2.5rem; color: var(--primary);"></i>
+                    <h6 class="fw-bold">Carcar - Mandue</h6>
+                    <p class="text-muted small mb-2">6h 15min | Daily buses</p>
+                    <span class="fw-bold" style="color: var(--primary);">From ₱39</span>
+                </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+                <div class="card text-center p-4 h-100">
+                    <i class="bi bi-bus-front mb-3" style="font-size: 2.5rem; color: var(--primary);"></i>
+                    <h6 class="fw-bold">Carcar - Cebu City</h6>
+                    <p class="text-muted small mb-2">4h 45min | Daily buses</p>
+                    <span class="fw-bold" style="color: var(--primary);">From ₱25</span>
+                </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+                <div class="card text-center p-4 h-100">
+                    <i class="bi bi-bus-front mb-3" style="font-size: 2.5rem; color: var(--primary);"></i>
+                    <h6 class="fw-bold">Naga - Minglanilla</h6>
+                    <p class="text-muted small mb-2">3h 30min | Daily buses</p>
+                    <span class="fw-bold" style="color: var(--primary);">From ₱22</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section class="py-5 bg-white">
+    <div class="container">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="d-flex align-items-start gap-3">
+                    <div class="flex-shrink-0">
+                        <div style="width: 60px; height: 60px; background: rgba(229, 9, 20, 0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                            <i class="bi bi-shield-check" style="font-size: 1.5rem; color: var(--primary);"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <h6 class="fw-bold mb-2">Safe Travel</h6>
+                        <p class="text-muted small mb-0">All our bus partners follow strict safety protocols</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="d-flex align-items-start gap-3">
+                    <div class="flex-shrink-0">
+                        <div style="width: 60px; height: 60px; background: rgba(10, 132, 255, 0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                            <i class="bi bi-wallet2" style="font-size: 1.5rem; color: var(--secondary);"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <h6 class="fw-bold mb-2">Best Prices</h6>
+                        <p class="text-muted small mb-0">Compare prices from multiple operators</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="d-flex align-items-start gap-3">
+                    <div class="flex-shrink-0">
+                        <div style="width: 60px; height: 60px; background: rgba(34, 197, 94, 0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                            <i class="bi bi-lightning-charge" style="font-size: 1.5rem; color: #22C55E;"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <h6 class="fw-bold mb-2">Instant Confirmation</h6>
+                        <p class="text-muted small mb-0">Get your e-ticket immediately after booking</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const dateInput = document.getElementById('travelDate');
+        if (dateInput) {
+            const today = new Date().toISOString().split('T')[0];
+            dateInput.setAttribute('min', today);
+            dateInput.value = today;
+        }
+    });
+</script>
+{% endblock %}

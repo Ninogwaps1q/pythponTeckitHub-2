@@ -1,0 +1,130 @@
+{% extends 'base.html' %}
+
+{% block title %}Payment Successful - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-5" style="background:#f8f9fa;">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-lg-6">
+                <div class="card text-center shadow-sm">
+                    <div class="card-body p-5">
+
+                        <!-- Success Icon -->
+                        <div class="mb-4">
+                            <div class="d-inline-flex align-items-center justify-content-center rounded-circle"
+                                 style="width: 100px; height: 100px; background: rgba(34, 197, 94, 0.1);">
+                                <i class="bi bi-check-lg text-success" style="font-size: 3rem;"></i>
+                            </div>
+                        </div>
+
+                        <h2 class="fw-bold mb-2">Payment Successful!</h2>
+                        <p class="text-muted mb-4">
+                            Your booking has been confirmed. A confirmation email has been sent to your registered email.
+                        </p>
+
+                        <!-- Booking Details -->
+                        <div class="bg-light rounded-3 p-4 text-start mb-4">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Booking Reference</span>
+                                <span class="fw-bold">{{ booking.booking_reference }}</span>
+                            </div>
+
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Payment Status</span>
+                                <span class="badge bg-success">{{ booking.payment_status.upper() }}</span>
+                            </div>
+
+                            {% if booking.payment_method %}
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Payment Method</span>
+                                <span class="fw-semibold">
+                                    {% if booking.payment_method == 'card' %}
+                                        💳 Credit/Debit Card
+                                    {% elif booking.payment_method == 'gcash' %}
+                                        👛 GCash
+                                    {% elif booking.payment_method == 'paymaya' %}
+                                        👛 PayMaya
+                                    {% elif booking.payment_method == 'paypal' %}
+                                        🅿️ PayPal
+                                    {% else %}
+                                        {{ booking.payment_method.upper() }}
+                                    {% endif %}
+                                </span>
+                            </div>
+                            {% endif %}
+
+                            {% if booking_type == 'movie' %}
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Movie</span>
+                                    <span class="fw-semibold">{{ booking.showtime.movie.title }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Cinema</span>
+                                    <span>{{ booking.showtime.cinema.name }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Date & Time</span>
+                                    <span>{{ booking.showtime.show_date.strftime('%b %d, %Y') }} | {{ booking.showtime.show_time.strftime('%I:%M %p') }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Tickets</span>
+                                    <span>{{ booking.num_tickets }}</span>
+                                </div>
+                                {% if booking.seat_numbers %}
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Seats</span>
+                                    <span>{{ booking.seat_numbers }}</span>
+                                </div>
+                                {% endif %}
+                            {% else %}
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Route</span>
+                                    <span class="fw-semibold">{{ booking.schedule.route.origin }} - {{ booking.schedule.route.destination }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Travel Date</span>
+                                    <span>{{ booking.schedule.travel_date.strftime('%b %d, %Y') }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Departure</span>
+                                    <span>{{ booking.schedule.route.departure_time.strftime('%I:%M %p') }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Passengers</span>
+                                    <span>{{ booking.num_tickets }}</span>
+                                </div>
+                            {% endif %}
+
+                            <hr>
+
+                            <div class="d-flex justify-content-between">
+                                <span class="fw-bold">Amount Paid</span>
+                                <span class="fw-bold fs-5 text-success">₱{{ "%.2f"|format(booking.total_amount) }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="d-flex gap-3 justify-content-center flex-wrap">
+                            <a href="{{ url_for('dashboard') }}" class="btn btn-primary">
+                                <i class="bi bi-grid me-2"></i>View My Bookings
+                            </a>
+                            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">
+                                <i class="bi bi-house me-2"></i>Back to Home
+                            </a>
+                        </div>
+
+                        <!-- Print Ticket -->
+                        <div class="mt-4">
+                            <button class="btn btn-link text-muted" onclick="window.print()">
+                                <i class="bi bi-printer me-2"></i>Print Ticket
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

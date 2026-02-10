@@ -1,0 +1,65 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Movie Bookings - Admin - TicketHub{% endblock %}
+
+{% block admin_content %}
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="h3 mb-0">Movie Bookings</h1>
+        </div>
+    </div>
+
+    {% if bookings %}
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="bg-light">
+                    <tr>
+                        <th class="px-4 py-3">Booking Ref</th>
+                        <th class="py-3">User</th>
+                        <th class="py-3">Movie</th>
+                        <th class="py-3">Cinema</th>
+                        <th class="py-3">Show Date</th>
+                        <th class="py-3">Tickets</th>
+                        <th class="py-3">Amount</th>
+                        <th class="py-3">Payment Status</th>
+                        <th class="py-3">Booking Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for booking in bookings %}
+                    <tr>
+                        <td class="px-4 py-3">
+                            <span class="fw-semibold">{{ booking.booking_reference }}</span>
+                        </td>
+                        <td class="py-3">{{ booking.user.name }}</td>
+                        <td class="py-3">{{ booking.showtime.movie.title }}</td>
+                        <td class="py-3">{{ booking.showtime.cinema.name }}</td>
+                        <td class="py-3">{{ booking.showtime.show_date.strftime('%b %d, %Y') }}</td>
+                        <td class="py-3">{{ booking.num_tickets }}</td>
+                        <td class="py-3 fw-semibold">₱{{ "%.2f"|format(booking.total_amount) }}</td>
+                        <td class="py-3">
+                            {% if booking.payment_status in ['completed', 'paid'] %}
+                                    <span class="badge bg-success">Completed</span>
+                                {% elif booking.payment_status == 'pending' %}
+                                    <span class="badge bg-warning">Pending</span>
+                                {% else %}
+                                    <span class="badge bg-danger">Failed</span>
+                                {% endif %}
+                        </td>
+                        <td class="py-3">{{ booking.created_at.strftime('%b %d, %Y %I:%M %p') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-info text-center py-5">
+        <i class="bi bi-info-circle me-2"></i>
+        <strong>No movie bookings found</strong>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

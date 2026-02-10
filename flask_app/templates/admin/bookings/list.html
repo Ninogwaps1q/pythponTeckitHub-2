@@ -1,0 +1,113 @@
+{% extends "admin/base.html" %}
+
+{% block title %}All Bookings - Admin{% endblock %}
+
+{% block admin_content %}
+<div class="flex items-center justify-between mb-8">
+    <h1 class="text-2xl font-bold text-gray-900">All Bookings</h1>
+    <div class="flex gap-2">
+        <select id="filter-type" onchange="filterBookings()" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+            <option value="all">All Types</option>
+            <option value="movie">Movie</option>
+            <option value="bus">Bus</option>
+        </select>
+        <select id="filter-status" onchange="filterBookings()" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+            <option value="all">All Status</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="pending">Pending</option>
+            <option value="cancelled">Cancelled</option>
+        </select>
+    </div>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <table class="w-full">
+        <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Booking ID</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">User</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Type</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Details</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Amount</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Status</th>
+                <th class="text-left py-4 px-6 text-sm font-semibold text-gray-900">Date</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200" id="bookings-table">
+            {% for booking in bookings %}
+            <tr class="hover:bg-gray-50 transition-colors booking-row" 
+                data-type="{{ booking.booking_type }}" 
+                data-status="{{ booking.status }}">
+                <td class="py-4 px-6">
+                    <span class="font-mono text-sm text-gray-900">#{{ booking.id }}</span>
+                </td>
+                <td class="py-4 px-6">
+                    <div>
+                        <div class="font-medium text-gray-900">{{ booking.user.name }}</div>
+                        <div class="text-sm text-gray-500">{{ booking.user.email }}</div>
+                    </div>
+                </td>
+                <td class="py-4 px-6">
+                    {% if booking.booking_type == 'movie' %}
+                    <span class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">Movie</span>
+                    {% else %}
+                    <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">Bus</span>
+                    {% endif %}
+                </td>
+                <td class="py-4 px-6 text-gray-600">
+                    {% if booking.booking_type == 'movie' and booking.showtime %}
+                        {{ booking.showtime.movie.title }} - {{ booking.num_seats }} seat(s)
+                    {% elif booking.booking_type == 'bus' and booking.bus %}
+                        {{ booking.bus.origin }} → {{ booking.bus.destination }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+                <td class="py-4 px-6 font-semibold text-gray-900">${{ "%.2f"|format(booking.total_amount) }}</td>
+                <td class="py-4 px-6">
+                    {% if booking.status == 'confirmed' %}
+                    <span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">Confirmed</span>
+                    {% elif booking.status == 'pending' %}
+                    <span class="px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-sm font-medium">Pending</span>
+                    {% else %}
+                    <span class="px-3 py-1 bg-red-100 text-red-700 rounded-full text-sm font-medium">Cancelled</span>
+                    {% endif %}
+                </td>
+                <td class="py-4 px-6 text-gray-600">{{ booking.booking_date.strftime('%b %d, %Y') }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" class="py-12 text-center text-gray-500">
+                    <svg class="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                    </svg>
+                    No bookings found.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function filterBookings() {
+    const typeFilter = document.getElementById('filter-type').value;
+    const statusFilter = document.getElementById('filter-status').value;
+    const rows = document.querySelectorAll('.booking-row');
+    
+    rows.forEach(row => {
+        const type = row.dataset.type;
+        const status = row.dataset.status;
+        
+        const typeMatch = typeFilter === 'all' || type === typeFilter;
+        const statusMatch = statusFilter === 'all' || status === statusFilter;
+        
+        if (typeMatch && statusMatch) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+</script>
+{% endblock %}

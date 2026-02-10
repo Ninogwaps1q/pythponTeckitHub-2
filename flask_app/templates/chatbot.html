@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+
+{% block title %}Chatbot - TicketHub{% endblock %}
+
+{% block content %}
+<div class="min-vh-100 d-flex align-items-center" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%); margin-top: -76px; padding-top: 76px;">
+    <div class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                <div class="card shadow-lg border-0">
+                    <div class="card-body p-5">
+                        <div class="text-center mb-4">
+                            <h2 class="fw-bold mb-2">TicketHub Chatbot</h2>
+                            <p class="text-muted">Ask anything and get instant help</p>
+                        </div>
+                        
+                        <div id="chat-box" class="chat-box mb-3"></div>
+
+                        <div class="input-group">
+                            <input type="text" id="user-input" class="form-control" placeholder="Type your message...">
+                            <button id="send-btn" class="btn btn-primary">
+                                Send <i class="bi bi-arrow-right ms-1"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center mt-4">
+                    <p class="text-white-50 small">
+                        Demo Bot: Try asking "How do I book a ticket?"
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- External CSS -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/chatbot.css') }}">
+
+<!-- External JS -->
+<script src="{{ url_for('static', filename='js/chatbot.js') }}"></script>
+{% endblock %}

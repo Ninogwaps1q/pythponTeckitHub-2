@@ -1,0 +1,273 @@
+{% extends 'base.html' %}
+
+{% block title %}Payment - TicketHub{% endblock %}
+
+{% block extra_css %}
+<style>
+.payment-method-btn {
+    transition: all 0.3s ease;
+}
+.payment-method-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.payment-icon {
+    font-size: 24px;
+    margin-right: 10px;
+}
+.booking-summary {
+    background: #f8f9fa;
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+.loading-spinner {
+    display: none;
+}
+.loading-spinner.show {
+    display: block;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="py-5" style="background:#141414">
+    <div class="container">
+        <h1 class="text-white fw-bold">Complete Your Payment</h1>
+        <p class="text-white-50 mb-0">Secure payment powered by PayMongo</p>
+    </div>
+</section>
+
+<section class="py-5">
+<div class="container">
+<div class="row g-4 justify-content-center">
+
+<!-- BOOKING SUMMARY -->
+<div class="col-lg-6">
+    <div class="card mb-4">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-3">Booking Summary</h5>
+            <div class="booking-summary">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Booking Reference:</span>
+                    <strong>{{ booking.booking_reference }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Number of Tickets:</span>
+                    <strong>{{ booking.num_tickets }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Total Amount:</span>
+                    <strong class="text-primary">₱{{ "%.2f"|format(booking.total_amount) }}</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- PAYMENT BOX -->
+<div class="col-lg-6">
+<div class="card">
+<div class="card-body p-4">
+
+<h5 class="fw-bold mb-4">Select Payment Method</h5>
+
+<div class="d-grid gap-2">
+    <!-- CARD -->
+    <div class="form-check">
+        <input class="form-check-input" type="radio" name="payment_method" id="card_payment" value="card" checked>
+        <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="card_payment">
+            <span class="payment-icon"><i class="bi bi-credit-card"></i></span>
+            <span>Credit/Debit Card</span>
+            <small class="d-block text-muted">Visa, Mastercard, etc.</small>
+        </label>
+    </div>
+
+    <!-- GCASH -->
+    <div class="form-check">
+        <input class="form-check-input" type="radio" name="payment_method" id="gcash_payment" value="gcash">
+        <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="gcash_payment">
+            <span class="payment-icon"><i class="bi bi-wallet2"></i></span>
+            <span>GCash</span>
+            <small class="d-block text-muted">Pay with GCash wallet</small>
+        </label>
+    </div>
+
+    <!-- PAYMAYA -->
+    <div class="form-check">
+        <input class="form-check-input" type="radio" name="payment_method" id="paymaya_payment" value="paymaya">
+        <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="paymaya_payment">
+            <span class="payment-icon"><i class="bi bi-wallet2"></i></span>
+            <span>PayMaya</span>
+            <small class="d-block text-muted">Pay with PayMaya wallet</small>
+        </label>
+    </div>
+    
+    <!-- PAYPAL -->
+    <div class="form-check">
+        <input class="form-check-input" type="radio" name="payment_method" id="paypal_payment" value="paypal">
+        <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="paypal_payment">
+            <span class="payment-icon"><i class="bi bi-wallet2"></i></span>
+            <span>PayPal</span>
+            <small class="d-block text-muted">International payments</small>
+        </label>
+    </div>
+</div>
+
+<!-- PAYMENT DETAILS -->
+<div id="payment-details" class="mt-4">
+    <div id="card-details" class="payment-detail-section">
+        <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle me-2"></i>
+            Card payments are processed via PayMongo's secure checkout.
+        </div>
+    </div>
+
+    <div id="gcash-details" class="payment-detail-section d-none">
+        <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle me-2"></i>
+            You will be redirected to PayMongo's checkout page to complete your GCash payment.
+        </div>
+    </div>
+
+    <div id="paymaya-details" class="payment-detail-section d-none">
+        <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle me-2"></i>
+            PayMaya payments are processed via PayMongo's checkout.
+        </div>
+    </div>
+
+    <div id="paypal-details" class="payment-detail-section d-none">
+        <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle me-2"></i>
+            PayPal payments are routed through PayMongo's checkout.
+        </div>
+    </div>
+</div>
+
+<!-- PROCEED BUTTON -->
+<button id="proceed-payment" class="btn btn-primary btn-lg w-100 mt-4">
+    <span id="button-text">Proceed to Payment</span>
+    <span id="loading-spinner" class="loading-spinner">
+        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+        Processing...
+    </span>
+</button>
+
+<div id="error-message" class="alert alert-danger mt-3 d-none"></div>
+
+<!-- GCash flow simplified: no QR modal (always use checkout page) -->
+
+</div>
+</div>
+</div>
+
+</div>
+</div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const paymentMethods = ['card', 'gcash', 'paymaya', 'paypal'];
+
+// Handle payment method selection
+paymentMethods.forEach(method => {
+    document.getElementById(`${method}_payment`).addEventListener('change', function() {
+        // Hide all details
+        document.querySelectorAll('.payment-detail-section').forEach(el => el.classList.add('d-none'));
+        // Show selected method details
+        document.getElementById(`${method}-details`).classList.remove('d-none');
+        // Update proceed button label to indicate PayMongo for supported methods
+        const btnText = document.getElementById('button-text');
+        if (['card','paymaya','paypal'].includes(method)) {
+            btnText.textContent = 'Continue with PayMongo';
+        } else if (method === 'gcash') {
+            btnText.textContent = 'Proceed to Payment';
+        } else {
+            btnText.textContent = 'Proceed to Payment';
+        }
+    });
+});
+
+// Handle payment submission
+document.getElementById('proceed-payment').addEventListener('click', async function() {
+    const selectedMethod = document.querySelector('input[name="payment_method"]:checked')?.value;
+    
+    if (!selectedMethod) {
+        showError('Please select a payment method');
+        return;
+    }
+
+    await processPayment(selectedMethod);
+});
+
+async function processPayment(method) {
+    const button = document.getElementById('proceed-payment');
+    const buttonText = document.getElementById('button-text');
+    const spinner = document.getElementById('loading-spinner');
+    
+    // Show loading state
+    button.disabled = true;
+    buttonText.classList.add('d-none');
+    spinner.classList.add('show');
+
+    try {
+        const response = await fetch('/payment-ewallet-pending', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                booking_type: '{{ booking_type }}',
+                booking_id: {{ booking.id }},
+                payment_method: method,
+                gateway: 'paymongo'
+            })
+        });
+
+        const data = await response.json();
+
+        if (!data.success) {
+            // Show detailed error message including PayMongo error if available
+            let errorMsg = data.error || 'Failed to initiate payment';
+            if (data.details) {
+                errorMsg += ` (${JSON.stringify(data.details)})`;
+            }
+            showError(errorMsg);
+            button.disabled = false;
+            buttonText.classList.remove('d-none');
+            spinner.classList.remove('show');
+            return;
+        }
+
+        if (!data.checkout_url) {
+            showError('No payment checkout URL provided');
+            button.disabled = false;
+            buttonText.classList.remove('d-none');
+            spinner.classList.remove('show');
+            return;
+        }
+
+        // All supported methods use PayMongo checkout (gcash, card, paymaya, paypal)
+        window.location.href = data.checkout_url;
+
+    } catch (error) {
+        console.error('Payment error:', error);
+        showError('Payment initiation failed: ' + error.message);
+        button.disabled = false;
+        buttonText.classList.remove('d-none');
+        spinner.classList.remove('show');
+    }
+}
+
+
+
+function showError(message) {
+    const errorDiv = document.getElementById('error-message');
+    errorDiv.textContent = message;
+    errorDiv.classList.remove('d-none');
+    
+    setTimeout(() => {
+        errorDiv.classList.add('d-none');
+    }, 5000);
+}</script>
+{% endblock %}

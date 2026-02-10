@@ -1,0 +1,221 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Admin Dashboard - TicketHub{% endblock %}
+
+{% block admin_content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2 class="fw-bold mb-0">Dashboard Overview</h2>
+    <span class="text-muted">Welcome, {{ current_user.name }}</span>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-5">
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(10, 132, 255, 0.1);">
+                <i class="bi bi-people" style="color: var(--secondary);"></i>
+            </div>
+            <div class="stat-value">{{ stats.total_users }}</div>
+            <div class="stat-label">Total Users</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(229, 9, 20, 0.1);">
+                <i class="bi bi-film" style="color: var(--primary);"></i>
+            </div>
+            <div class="stat-value">{{ stats.total_movies }}</div>
+            <div class="stat-label">Movies</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1);">
+                <i class="bi bi-bus-front" style="color: #F59E0B;"></i>
+            </div>
+            <div class="stat-value">{{ stats.total_bus_routes }}</div>
+            <div class="stat-label">Bus Routes</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(139, 92, 246, 0.1);">
+                <i class="bi bi-ticket-perforated" style="color: #8B5CF6;"></i>
+            </div>
+            <div class="stat-value">{{ stats.movie_bookings }}</div>
+            <div class="stat-label">Movie Bookings</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(6, 182, 212, 0.1);">
+                <i class="bi bi-ticket" style="color: #06B6D4;"></i>
+            </div>
+            <div class="stat-value">{{ stats.bus_bookings }}</div>
+            <div class="stat-label">Bus Bookings</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4 col-xl-2">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(34, 197, 94, 0.1);">
+                <i class="bi bi-cash-coin" style="color: #22C55E;"></i>
+            </div>
+            <div class="stat-value">₱{{ "%.0f"|format(stats.total_revenue) }}</div>
+            <div class="stat-label">Revenue</div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row g-4 mb-5">
+    <div class="col-md-6 col-lg-3">
+        <a href="{{ url_for('admin_add_movie') }}" class="card text-decoration-none h-100">
+            <div class="card-body d-flex align-items-center gap-3 p-4">
+                <div class="rounded-3 p-3" style="background: rgba(229, 9, 20, 0.1);">
+                    <i class="bi bi-plus-circle" style="font-size: 1.5rem; color: var(--primary);"></i>
+                </div>
+                <div>
+                    <h6 class="fw-bold mb-1 text-dark">Add Movie</h6>
+                    <p class="text-muted small mb-0">Add new movie to catalog</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <a href="{{ url_for('admin_add_showtime') }}" class="card text-decoration-none h-100">
+            <div class="card-body d-flex align-items-center gap-3 p-4">
+                <div class="rounded-3 p-3" style="background: rgba(10, 132, 255, 0.1);">
+                    <i class="bi bi-calendar-plus" style="font-size: 1.5rem; color: var(--secondary);"></i>
+                </div>
+                <div>
+                    <h6 class="fw-bold mb-1 text-dark">Add Showtime</h6>
+                    <p class="text-muted small mb-0">Schedule movie showings</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <a href="{{ url_for('admin_add_bus_route') }}" class="card text-decoration-none h-100">
+            <div class="card-body d-flex align-items-center gap-3 p-4">
+                <div class="rounded-3 p-3" style="background: rgba(245, 158, 11, 0.1);">
+                    <i class="bi bi-signpost-split" style="font-size: 1.5rem; color: #F59E0B;"></i>
+                </div>
+                <div>
+                    <h6 class="fw-bold mb-1 text-dark">Add Bus Route</h6>
+                    <p class="text-muted small mb-0">Create new bus route</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <a href="{{ url_for('admin_add_cinema') }}" class="card text-decoration-none h-100">
+            <div class="card-body d-flex align-items-center gap-3 p-4">
+                <div class="rounded-3 p-3" style="background: rgba(139, 92, 246, 0.1);">
+                    <i class="bi bi-building" style="font-size: 1.5rem; color: #8B5CF6;"></i>
+                </div>
+                <div>
+                    <h6 class="fw-bold mb-1 text-dark">Add Cinema</h6>
+                    <p class="text-muted small mb-0">Register new cinema</p>
+                </div>
+            </div>
+        </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Recent Movie Bookings -->
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                <h6 class="fw-bold mb-0">Recent Movie Bookings</h6>
+                <div class="btn-group">
+                    <a href="{{ url_for('admin_movie_bookings') }}" class="btn btn-sm btn-outline-primary">View All</a>
+                    <a href="{{ url_for('admin_transactions') }}" class="btn btn-sm btn-outline-secondary">View Transactions</a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_movie_bookings %}
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="bg-light">
+                                <tr>
+                                    <th class="px-4 py-3">Reference</th>
+                                    <th class="py-3">Movie</th>
+                                    <th class="py-3">Amount</th>
+                                    <th class="py-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for booking in recent_movie_bookings %}
+                                <tr>
+                                    <td class="px-4 py-3">{{ booking.booking_reference }}</td>
+                                    <td class="py-3">{{ booking.showtime.movie.title[:20] }}...</td>
+                                    <td class="py-3">₱{{ "%.2f"|format(booking.total_amount) }}</td>
+                                    <td class="py-3">
+                                        {% if booking.payment_status in ['completed','paid'] %}
+                                            <span class="badge bg-success">Paid</span>
+                                        {% else %}
+                                            <span class="badge bg-warning text-dark">Pending</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <p class="text-muted mb-0">No movie bookings yet</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Bus Bookings -->
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                <h6 class="fw-bold mb-0">Recent Bus Bookings</h6>
+                <a href="{{ url_for('admin_bus_bookings') }}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_bus_bookings %}
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="bg-light">
+                                <tr>
+                                    <th class="px-4 py-3">Reference</th>
+                                    <th class="py-3">Route</th>
+                                    <th class="py-3">Amount</th>
+                                    <th class="py-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for booking in recent_bus_bookings %}
+                                <tr>
+                                    <td class="px-4 py-3">{{ booking.booking_reference }}</td>
+                                    <td class="py-3">{{ booking.schedule.route.origin }} - {{ booking.schedule.route.destination }}</td>
+                                    <td class="py-3">₱{{ "%.2f"|format(booking.total_amount) }}</td>
+                                    <td class="py-3">
+                                        {% if booking.payment_status in ['completed','paid'] %}
+                                            <span class="badge bg-success">Paid</span>
+                                        {% else %}
+                                            <span class="badge bg-warning text-dark">Pending</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <p class="text-muted mb-0">No bus bookings yet</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

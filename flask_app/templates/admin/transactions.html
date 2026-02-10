@@ -1,0 +1,80 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Transactions - Admin - TicketHub{% endblock %}
+
+{% block admin_content %}
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col-12 d-flex justify-content-between align-items-center">
+            <h1 class="h3 mb-0">Payment Transactions</h1>
+            <div>
+                <button class="btn btn-sm btn-outline-secondary" id="refreshBtn">Refresh</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0" id="transactionsTable">
+                <thead class="bg-light">
+                    <tr>
+                        <th class="px-4 py-3">ID</th>
+                        <th class="py-3">Booking Ref</th>
+                        <th class="py-3">Type</th>
+                        <th class="py-3">Amount</th>
+                        <th class="py-3">Method</th>
+                        <th class="py-3">Status</th>
+                        <th class="py-3">Completed By</th>
+                        <th class="py-3">Date</th>
+                    </tr>
+                </thead>
+                <tbody id="transactionsBody">
+                    <tr>
+                        <td colspan="8" class="text-center py-4 text-muted">Loading transactions...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadTransactions() {
+    const tbody = document.getElementById('transactionsBody');
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">Loading transactions...</td></tr>';
+
+    try {
+        const res = await fetch('/api/transactions?page=1&per_page=100');
+        if (!res.ok) throw new Error('Failed to fetch');
+        const data = await res.json();
+
+        const items = (data.transactions || []).filter(t => t.payment_status && ['completed','paid','succeeded','captured'].includes(t.payment_status.toLowerCase()));
+
+        if (items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">No completed transactions found.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = items.map(t => `
+            <tr>
+                <td class="px-4 py-3">${t.id}</td>
+                <td class="py-3 font-mono">${t.booking_reference}</td>
+                <td class="py-3">${t.booking_type}</td>
+                <td class="py-3">₱${(t.amount||0).toFixed(2)}</td>
+                <td class="py-3">${t.payment_method}</td>
+                <td class="py-3"><span class="badge bg-success">${t.payment_status}</span></td>
+                <td class="py-3">${t.completed_by_name || (t.completed_by ? 'User #' + t.completed_by : '—')}</td>
+                <td class="py-3">${new Date(t.created_at).toLocaleString()}</td>
+            </tr>
+        `).join('');
+
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-4 text-danger">Error loading transactions: ${err.message}</td></tr>`;
+    }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadTransactions);
+window.addEventListener('DOMContentLoaded', loadTransactions);
+</script>
+
+{% endblock %}

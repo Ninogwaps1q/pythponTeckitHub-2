@@ -1,0 +1,262 @@
+{% extends 'base.html' %}
+
+{% block title %}Book Bus - {{ route.origin }} to {{ route.destination }} - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-4" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
+    <div class="container">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-2">
+                <li class="breadcrumb-item"><a href="{{ url_for('search_bus') }}" class="text-white-50">Bus Search</a></li>
+                <li class="breadcrumb-item active text-white">Book Tickets</li>
+            </ol>
+        </nav>
+        <h2 class="text-white fw-bold">{{ route.origin }} <i class="bi bi-arrow-right mx-2"></i> {{ route.destination }}</h2>
+    </div>
+</section>
+
+<section class="py-5">
+    <div class="container">
+        <div class="row g-4">
+            <!-- Passenger Details -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-body p-4">
+                        <h5 class="fw-bold mb-4">Passenger Details</h5>
+                        
+                        <form method="POST" action="{{ url_for('book_bus', route_id=route.id, date=travel_date) }}" id="bookingForm">
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-6">
+                                    <label class="form-label">Number of Passengers</label>
+                                    <select class="form-select" name="num_tickets" id="numPassengers">
+                                        {% if schedule.available_seats >= 10 %}
+                                            {% for i in range(1, 11) %}
+                                                <option value="{{ i }}">{{ i }} {% if i == 1 %}Passenger{% else %}Passengers{% endif %}</option>
+                                            {% endfor %}
+                                        {% else %}
+                                            {% for i in range(1, schedule.available_seats + 1) %}
+                                                <option value="{{ i }}">{{ i }} {% if i == 1 %}Passenger{% else %}Passengers{% endif %}</option>
+                                            {% endfor %}
+                                        {% endif %}
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div id="passengerForms">
+                                <div class="passenger-form mb-4 p-4 bg-light rounded-3">
+                                    <h6 class="fw-bold mb-3">Passenger 1</h6>
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <label class="form-label">Full Name</label>
+                                            <input type="text" class="form-control" name="passenger_1_name" placeholder="As per ID" required>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label">Age</label>
+                                            <input type="number" class="form-control" name="passenger_1_age" placeholder="Age" min="1" max="120">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label">Gender</label>
+                                            <select class="form-select" name="passenger_1_gender">
+                                                <option value="male">Male</option>
+                                                <option value="female">Female</option>
+                                                <option value="other">Other</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <input type="hidden" name="seat_numbers" id="selectedSeatsInput">
+                            <input type="hidden" name="passenger_names" id="passengerNamesInput">
+                            
+                            <!-- Contact Details -->
+                            <div class="mt-4 p-4 bg-light rounded-3">
+                                <h6 class="fw-bold mb-3">Contact Details</h6>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Email</label>
+                                        <input type="email" class="form-control" value="{{ current_user.email }}" readonly>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Phone</label>
+                                        <input type="tel" class="form-control" value="{{ current_user.phone or '' }}" readonly>
+                                    </div>
+                                </div>
+                                <small class="text-muted mt-2 d-block">Ticket will be sent to this email and phone number</small>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Booking Summary -->
+            <div class="col-lg-4">
+                <div class="card sticky-top" style="top: 100px;">
+                    <div class="card-body p-4">
+                        <h5 class="fw-bold mb-4">Journey Details</h5>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <div>
+                                <div class="fw-bold fs-5">{{ route.departure_time.strftime('%H:%M') }}</div>
+                                <div class="text-muted">{{ route.origin }}</div>
+                            </div>
+                            <div class="text-center px-3">
+                                <div class="text-muted small">{{ route.duration or '---' }}</div>
+                                <i class="bi bi-arrow-right"></i>
+                            </div>
+                            <div class="text-end">
+                                <div class="fw-bold fs-5">{{ route.arrival_time.strftime('%H:%M') }}</div>
+                                <div class="text-muted">{{ route.destination }}</div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-light rounded-3 p-3 mb-4">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Date</span>
+                                <span class="fw-semibold">{{ travel_date }}</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Bus Type</span>
+                                <span class="fw-semibold">{{ route.bus_type or 'Standard' }}</span>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span class="text-muted">Operator</span>
+                                <span class="fw-semibold">{{ route.bus_operator or 'Express' }}</span>
+                            </div>
+                        </div>
+                        
+                        {% if route.amenities %}
+                        <div class="mb-4">
+                            <h6 class="fw-bold mb-2">Amenities</h6>
+                            <div class="d-flex gap-2 flex-wrap">
+                                {% for amenity in route.amenities.split(',') %}
+                                    <span class="badge bg-light text-dark">{{ amenity.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <hr>
+                        
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">Fare per passenger</span>
+                            <span>₱{{ "%.2f"|format(route.price) }}</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">Passengers</span>
+                            <span id="passengerCount">1</span>
+                        </div>
+                        <hr>
+                        <div class="d-flex justify-content-between mb-4">
+                            <span class="fw-bold">Total Amount</span>
+                            <span class="fw-bold fs-4" style="color: var(--primary);" id="totalPrice">₱{{ "%.2f"|format(route.price) }}</span>
+                        </div>
+                        
+                        <button type="submit" form="bookingForm" class="btn btn-primary w-100 py-3">
+                            Proceed to Payment <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                        
+                        <p class="text-muted small text-center mt-3 mb-0">
+                            <i class="bi bi-shield-check me-1"></i>
+                            Your booking is processed securely via PayMongo
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const pricePerPassenger = {{ route.price }};
+    let availableSeats = {{ schedule.available_seats or 0 }};
+
+    // Try to fetch the latest availability for this schedule to prevent stale counts
+    document.addEventListener('DOMContentLoaded', function() {
+        const scheduleId = {{ schedule.id }};
+        fetch(`/api/schedule-seats/${scheduleId}`).then(r => r.json()).then(data => {
+            if (data && data.available_seats !== undefined) {
+                availableSeats = data.available_seats;
+                rebuildPassengerOptions();
+            }
+        }).catch(err => {
+            console.warn('Could not fetch latest schedule availability:', err);
+        });
+    });
+
+    function rebuildPassengerOptions(){
+        const select = document.getElementById('numPassengers');
+        const max = Math.min(10, Math.max(1, parseInt(availableSeats || 0)));
+        select.innerHTML = '';
+        for (let i=1;i<=max;i++){
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.text = i + (i==1 ? ' Passenger' : ' Passengers');
+            select.appendChild(opt);
+        }
+        // Trigger change to rebuild passenger forms
+        select.dispatchEvent(new Event('change'));
+    }
+
+    document.getElementById('numPassengers').addEventListener('change', function() {
+        const numPassengers = parseInt(this.value);
+        const formsContainer = document.getElementById('passengerForms');
+        
+        // Update passenger forms
+        let html = '';
+        for (let i = 1; i <= numPassengers; i++) {
+            html += `
+                <div class="passenger-form mb-4 p-4 bg-light rounded-3">
+                    <h6 class="fw-bold mb-3">Passenger ${i}</h6>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Full Name</label>
+                            <input type="text" class="form-control passenger-name" name="passenger_${i}_name" placeholder="As per ID" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Age</label>
+                            <input type="number" class="form-control" name="passenger_${i}_age" placeholder="Age" min="1" max="120">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Gender</label>
+                            <select class="form-select" name="passenger_${i}_gender">
+                                <option value="male">Male</option>
+                                <option value="female">Female</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        formsContainer.innerHTML = html;
+        
+        // Update price
+        updatePrice();
+    });
+    
+    function updatePrice() {
+        const numPassengers = parseInt(document.getElementById('numPassengers').value);
+        document.getElementById('passengerCount').textContent = numPassengers;
+        document.getElementById('totalPrice').textContent = '₱' + (numPassengers * pricePerPassenger).toFixed(2);
+    }
+    
+    // Collect passenger names before submit and validate against latest availability
+    document.getElementById('bookingForm').addEventListener('submit', function(e) {
+        const numPassengers = parseInt(document.getElementById('numPassengers').value);
+        if (availableSeats < numPassengers) {
+            e.preventDefault();
+            alert('Only ' + availableSeats + ' seats available. Cannot book ' + numPassengers + ' passengers.');
+            return false;
+        }
+
+        const names = [];
+        document.querySelectorAll('.passenger-name').forEach(input => {
+            names.push(input.value);
+        });
+        document.getElementById('passengerNamesInput').value = names.join(', ');
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,91 @@
+{% extends 'base.html' %}
+
+{% block title %}Payment - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-5">
+    <div class="container">
+        <h1>Complete Your Payment</h1>
+        <p>Booking Reference: {{ booking.booking_reference }}</p>
+
+        <!-- Payment Methods -->
+        <div>
+            <input type="radio" name="payment_method" id="card_payment" value="card" checked> Card
+            <input type="radio" name="payment_method" id="gcash_payment" value="gcash"> GCash
+            <input type="radio" name="payment_method" id="paymaya_payment" value="paymaya"> PayMaya
+        </div>
+
+        <!-- Payment actions (all routed through PayMongo) -->
+        <div id="card-payment-section">
+            <p>Card, PayMaya and PayPal payments are handled via PayMongo.</p>
+            <button id="card-submit">Continue to PayMongo (Card/PayPal/PayMaya) ₱{{ "%.2f"|format(booking.total_amount) }}</button>
+        </div>
+
+        <div id="ewallet-section" class="d-none">
+            <p>GCash payments will open PayMongo checkout for e-wallet processing.</p>
+            <button id="gcash-submit">Proceed with GCash ₱{{ "%.2f"|format(booking.total_amount) }}</button>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Toggle sections
+    const cardRadio = document.getElementById('card_payment');
+    const gcashRadio = document.getElementById('gcash_payment');
+    const paymayaRadio = document.getElementById('paymaya_payment');
+
+    const cardSection = document.getElementById('card-payment-section');
+    const ewalletSection = document.getElementById('ewallet-section');
+
+    function hideAll() {
+        cardSection.classList.add('d-none');
+        ewalletSection.classList.add('d-none');
+    }
+
+    cardRadio.addEventListener('change', () => { hideAll(); cardSection.classList.remove('d-none'); });
+    gcashRadio.addEventListener('change', () => { hideAll(); ewalletSection.classList.remove('d-none'); });
+    paymayaRadio.addEventListener('change', () => { hideAll(); cardSection.classList.remove('d-none'); });
+
+    // Generic function to initiate PayMongo checkout for the selected method
+    async function startPaymongoFlow(method) {
+        const bookingId = {{ booking.id }};
+        const bookingType = "{{ booking_type }}";
+
+        try {
+            const resp = await fetch('/payment-ewallet-pending', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ booking_type: bookingType, booking_id: bookingId, payment_method: method, gateway: 'paymongo' })
+            });
+            const data = await resp.json();
+            if (data.success && data.checkout_url) {
+                window.location.href = data.checkout_url;
+            } else {
+                // Show detailed error including PayMongo error details
+                let errorMsg = data.error || 'Payment initialization failed';
+                if (data.details) {
+                    errorMsg += '\n\nPayMongo Details: ' + JSON.stringify(data.details, null, 2);
+                }
+                alert(errorMsg);
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Network or server error: ' + err.message);
+        }
+    }
+
+    document.getElementById('card-submit').addEventListener('click', function(e){
+        e.preventDefault();
+        // Use 'card' to represent both card, PayPal, PayMaya flows (PayMongo will handle type)
+        const method = document.querySelector('input[name="payment_method"]:checked')?.value || 'card';
+        startPaymongoFlow(method);
+    });
+
+    document.getElementById('gcash-submit').addEventListener('click', function(e){
+        e.preventDefault();
+        startPaymongoFlow('gcash');
+    });
+</script>
+{% endblock %}

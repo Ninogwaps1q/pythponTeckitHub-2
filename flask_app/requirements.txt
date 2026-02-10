@@ -1,0 +1,13 @@
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-WTF==1.2.1
+Werkzeug==3.0.1
+# removed stripe in favor of PayMongo integration
+python-dotenv==1.0.0
+email-validator==2.1.0
+Pillow==10.1.0
+requests==2.31.0
+Flask-Mail==0.9.1
+google-generativeai==0.3.0
+itsdangerous==2.1.2

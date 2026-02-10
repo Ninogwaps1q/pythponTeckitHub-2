@@ -1,0 +1,43 @@
+/* Chatbox styling - modern card design */
+.chat-box {
+  border: 1px solid #ccc;
+  padding: 15px;
+  height: 350px;
+  overflow-y: auto;
+  border-radius: 12px;
+  background-color: #f9f9f9;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: inset 0 4px 8px rgba(0,0,0,0.05);
+}
+
+/* Chat message styling */
+.chat-message {
+  padding: 10px 15px;
+  border-radius: 20px;
+  max-width: 70%;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+
+/* User message */
+.user-message {
+  align-self: flex-end;
+  background-color: #007bff;
+  color: white;
+  border-bottom-right-radius: 0;
+}
+
+/* Bot message */
+.bot-message {
+  align-self: flex-start;
+  background-color: #e5e5ea;
+  color: black;
+  border-bottom-left-radius: 0;
+}
+
+/* Input group button spacing */
+.input-group .btn {
+  min-width: 80px;
+}

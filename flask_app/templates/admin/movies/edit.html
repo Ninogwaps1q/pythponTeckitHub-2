@@ -1,0 +1,130 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Edit Movie - Admin{% endblock %}
+
+{% block admin_content %}
+<div class="mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb mb-2">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin_movies') }}" class="text-decoration-none">Movies</a></li>
+            <li class="breadcrumb-item active">Edit Movie</li>
+        </ol>
+    </nav>
+    <h2 class="fw-bold">Edit Movie</h2>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body p-4">
+                <form method="POST" action="{{ url_for('admin_edit_movie', movie_id=movie.id) }}" enctype="multipart/form-data">
+                    <div class="row g-4">
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Movie Title *</label>
+                            <input type="text" class="form-control" name="title" value="{{ movie.title }}" required>
+                        </div>
+                        
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Description</label>
+                            <textarea class="form-control" name="description" rows="4">{{ movie.description or '' }}</textarea>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Genre</label>
+                            <select class="form-select" name="genre">
+                                <option value="">Select genre</option>
+                                {% for g in ['Action', 'Comedy', 'Drama', 'Horror', 'Sci-Fi', 'Romance', 'Thriller', 'Animation', 'Documentary'] %}
+                                    <option value="{{ g }}" {{ 'selected' if movie.genre == g }}>{{ g }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Duration (minutes)</label>
+                            <input type="number" class="form-control" name="duration" value="{{ movie.duration or '' }}">
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Rating</label>
+                            <select class="form-select" name="rating">
+                                <option value="">Select rating</option>
+                                {% for r in ['G', 'PG', 'SPG', 'R', 'NC-17'] %}
+                                    <option value="{{ r }}" {{ 'selected' if movie.rating == r }}>{{ r }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Release Date</label>
+                            <input type="date" class="form-control" name="release_date" 
+                                   value="{{ movie.release_date.strftime('%Y-%m-%d') if movie.release_date else '' }}">
+                        </div>
+                        
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Poster Image</label>
+                            {% if movie.poster_image %}
+                                <div class="mb-3">
+                                    <img src="{{ url_for('static', filename='uploads/' + movie.poster_image) }}" 
+                                         class="rounded" style="max-height: 150px;">
+                                    <p class="text-muted small mt-2 mb-0">Current poster</p>
+                                </div>
+                            {% endif %}
+                            <input type="file" class="form-control" name="poster_image" accept="image/*">
+                            <small class="text-muted">Upload a new image to replace the current one</small>
+                        </div>
+                        
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Trailer URL</label>
+                            <input type="url" class="form-control" name="trailer_url" value="{{ movie.trailer_url or '' }}">
+                        </div>
+                        
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="is_active" id="isActive" 
+                                       {{ 'checked' if movie.is_active }}>
+                                <label class="form-check-label" for="isActive">Movie is active and visible to users</label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <div class="d-flex justify-content-between">
+                        <div class="d-flex gap-3">
+                            <button type="submit" class="btn btn-primary px-4">
+                                <i class="bi bi-check-lg me-2"></i>Save Changes
+                            </button>
+                            <a href="{{ url_for('admin_movies') }}" class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                        <form action="{{ url_for('admin_delete_movie', movie_id=movie.id) }}" method="POST" 
+                              onsubmit="return confirm('Are you sure you want to delete this movie?');">
+                            <button type="submit" class="btn btn-outline-danger">
+                                <i class="bi bi-trash me-2"></i>Delete
+                            </button>
+                        </form>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-body p-4">
+                <h6 class="fw-bold mb-3">Movie Info</h6>
+                <div class="text-muted small">
+                    <p class="mb-2"><strong>Created:</strong> {{ movie.created_at.strftime('%b %d, %Y') }}</p>
+                    <p class="mb-2"><strong>Showtimes:</strong> {{ movie.showtimes|length }}</p>
+                    <p class="mb-0"><strong>Status:</strong> 
+                        {% if movie.is_active %}
+                            <span class="badge bg-success">Active</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Inactive</span>
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
