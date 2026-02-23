@@ -63,7 +63,7 @@
                         N/A
                     {% endif %}
                 </td>
-                <td class="py-4 px-6 font-semibold text-gray-900">${{ "%.2f"|format(booking.total_amount) }}</td>
+                <td class="py-4 px-6 font-semibold text-gray-900">₱{{ "%.2f"|format(booking.total_amount) }}</td>
                 <td class="py-4 px-6">
                     {% if booking.status == 'confirmed' %}
                     <span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">Confirmed</span>

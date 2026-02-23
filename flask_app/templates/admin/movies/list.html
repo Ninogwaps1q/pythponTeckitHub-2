@@ -50,11 +50,23 @@
                                     </div>
                                 </div>
                             </td>
-                            <td class="py-3">{{ movie.genre or '-' }}</td>
+                            <td class="py-3">
+                                {% if movie.genre %}
+                                    {% for g in movie.genre.split(',') %}
+                                        {% set g2 = g.strip() %}
+                                        {% if g2 %}
+                                            <span class="badge bg-light text-dark me-1">{{ g2 }}</span>
+                                        {% endif %}
+                                    {% endfor %}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
                             <td class="py-3">{{ movie.duration or '-' }} min</td>
                             <td class="py-3">
                                 {% if movie.rating %}
-                                    <span class="badge bg-warning text-dark">{{ movie.rating }}</span>
+                                    {% set first_rating = movie.rating.split(',')[0].strip() %}
+                                    <span class="badge bg-warning text-dark">{{ first_rating }}</span>
                                 {% else %}
                                     -
                                 {% endif %}

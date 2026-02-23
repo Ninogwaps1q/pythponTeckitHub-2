@@ -3,6 +3,14 @@
 {% block title %}{{ origin }} to {{ destination }} - Bus Tickets - TicketHub{% endblock %}
 
 {% block content %}
+{% if routes %}
+    {% set route_prices = routes|map(attribute='price')|list %}
+    {% set min_price = (route_prices|min)|float %}
+    {% set max_price = (route_prices|max)|float %}
+{% else %}
+    {% set min_price = 0 %}
+    {% set max_price = 0 %}
+{% endif %}
 <!-- Header -->
 <section class="py-4" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
     <div class="container">
@@ -74,10 +82,21 @@
                         
                         <div>
                             <label class="form-label fw-semibold">Price Range</label>
-                            <input type="range" class="form-range" min="0" max="200" value="200">
+                            <input
+                                type="range"
+                                class="form-range"
+                                id="priceMax"
+                                min="{{ min_price|round(0, 'floor')|int }}"
+                                max="{{ max_price|round(0, 'ceil')|int }}"
+                                value="{{ max_price|round(0, 'ceil')|int }}"
+                                step="1"
+                            >
                             <div class="d-flex justify-content-between text-muted small">
-                                <span>₱0</span>
-                                <span>₱200</span>
+                                <span>₱<span id="priceMinLabel">{{ min_price|round(0, 'floor')|int }}</span></span>
+                                <span>₱<span id="priceMaxLabel">{{ max_price|round(0, 'ceil')|int }}</span></span>
+                            </div>
+                            <div class="text-muted small mt-2">
+                                Showing prices up to <span class="fw-semibold">₱<span id="priceCurrentLabel">{{ max_price|round(0, 'ceil')|int }}</span></span>
                             </div>
                         </div>
                     </div>
@@ -88,17 +107,22 @@
             <div class="col-lg-9">
                 {% if routes %}
                     <div class="d-flex justify-content-between align-items-center mb-4">
-                        <p class="mb-0 text-muted">Showing {{ routes|length }} buses</p>
-                        <select class="form-select form-select-sm w-auto">
-                            <option>Sort by: Price (Low to High)</option>
-                            <option>Sort by: Price (High to Low)</option>
-                            <option>Sort by: Departure Time</option>
-                            <option>Sort by: Duration</option>
+                        <p class="mb-0 text-muted">Showing <span id="showingCount">{{ routes|length }}</span> buses</p>
+                        <select class="form-select form-select-sm w-auto" id="sortBy">
+                            <option value="price_asc">Sort by: Price (Low to High)</option>
+                            <option value="price_desc">Sort by: Price (High to Low)</option>
+                            <option value="departure_asc">Sort by: Departure Time</option>
+                            <option value="duration_asc">Sort by: Duration</option>
                         </select>
                     </div>
-                    
+
+                    <div id="resultsList">
                     {% for route in routes %}
-                    <div class="card bus-card mb-3">
+                    <div class="card bus-card mb-3"
+                         data-price="{{ (route.price or 0)|float }}"
+                         data-type="{{ (route.bus_type or '')|lower }}"
+                         data-departure="{{ route.departure_time.strftime('%H:%M') }}"
+                         data-duration="{{ route.duration or '' }}">
                         <div class="card-body p-4">
                             <div class="row align-items-center">
                                 <div class="col-lg-7">
@@ -159,6 +183,7 @@
                         </div>
                     </div>
                     {% endfor %}
+                    </div>
                 {% else %}
                     <div class="text-center py-5 bg-white rounded-4">
                         <i class="bi bi-bus-front text-muted" style="font-size: 5rem;"></i>
@@ -173,4 +198,110 @@
         </div>
     </div>
 </section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    'use strict';
+
+    function parseDurationToMinutes(durationText) {
+        if (!durationText) return null;
+        // Examples: "4h 30min", "6h 15m", "270 min"
+        var text = String(durationText).toLowerCase();
+        var hours = 0;
+        var mins = 0;
+
+        var hMatch = text.match(/(\d+)\s*h/);
+        if (hMatch) hours = parseInt(hMatch[1], 10) || 0;
+
+        var mMatch = text.match(/(\d+)\s*m/);
+        if (mMatch) mins = parseInt(mMatch[1], 10) || 0;
+
+        var minMatch = text.match(/(\d+)\s*min/);
+        if (!mMatch && minMatch) mins = parseInt(minMatch[1], 10) || 0;
+
+        if (!hMatch && !mMatch && !minMatch) return null;
+        return (hours * 60) + mins;
+    }
+
+    function applyFiltersAndSort() {
+        var priceMaxEl = document.getElementById('priceMax');
+        var priceCurrentLabel = document.getElementById('priceCurrentLabel');
+        var showingCountEl = document.getElementById('showingCount');
+
+        var typeAC = document.getElementById('typeAC');
+        var typeNonAC = document.getElementById('typeNonAC');
+        var typeSleeper = document.getElementById('typeSleeper');
+
+        var sortBy = document.getElementById('sortBy');
+        var resultsList = document.getElementById('resultsList');
+        if (!resultsList) return;
+
+        var priceMax = priceMaxEl ? parseFloat(priceMaxEl.value || '0') : Infinity;
+        if (priceCurrentLabel && isFinite(priceMax)) priceCurrentLabel.textContent = String(Math.round(priceMax));
+
+        var cards = Array.prototype.slice.call(resultsList.querySelectorAll('.bus-card'));
+
+        function typeAllowed(typeText) {
+            var t = (typeText || '').toLowerCase();
+            if (!t) return true;
+            if (t.includes('non') && t.includes('ac')) return !!(typeNonAC && typeNonAC.checked);
+            if (t.includes('sleeper')) return !!(typeSleeper && typeSleeper.checked);
+            if (t.includes('ac')) return !!(typeAC && typeAC.checked);
+            return true;
+        }
+
+        var visibleCards = [];
+        cards.forEach(function(card) {
+            var price = parseFloat(card.getAttribute('data-price') || '0');
+            var typeText = card.getAttribute('data-type') || '';
+
+            var ok = true;
+            if (isFinite(priceMax) && price > priceMax) ok = false;
+            if (!typeAllowed(typeText)) ok = false;
+
+            card.style.display = ok ? '' : 'none';
+            if (ok) visibleCards.push(card);
+        });
+
+        if (showingCountEl) showingCountEl.textContent = String(visibleCards.length);
+
+        var sortValue = sortBy ? sortBy.value : 'price_asc';
+        visibleCards.sort(function(a, b) {
+            if (sortValue === 'price_desc') {
+                return (parseFloat(b.getAttribute('data-price') || '0') - parseFloat(a.getAttribute('data-price') || '0'));
+            }
+            if (sortValue === 'departure_asc') {
+                return String(a.getAttribute('data-departure') || '').localeCompare(String(b.getAttribute('data-departure') || ''));
+            }
+            if (sortValue === 'duration_asc') {
+                var am = parseDurationToMinutes(a.getAttribute('data-duration') || '');
+                var bm = parseDurationToMinutes(b.getAttribute('data-duration') || '');
+                if (am === null && bm === null) return 0;
+                if (am === null) return 1;
+                if (bm === null) return -1;
+                return am - bm;
+            }
+            return (parseFloat(a.getAttribute('data-price') || '0') - parseFloat(b.getAttribute('data-price') || '0'));
+        });
+
+        visibleCards.forEach(function(card) { resultsList.appendChild(card); });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var priceMax = document.getElementById('priceMax');
+        var sortBy = document.getElementById('sortBy');
+        var typeAC = document.getElementById('typeAC');
+        var typeNonAC = document.getElementById('typeNonAC');
+        var typeSleeper = document.getElementById('typeSleeper');
+
+        if (priceMax) priceMax.addEventListener('input', applyFiltersAndSort);
+        if (sortBy) sortBy.addEventListener('change', applyFiltersAndSort);
+        [typeAC, typeNonAC, typeSleeper].forEach(function(el) {
+            if (el) el.addEventListener('change', applyFiltersAndSort);
+        });
+
+        applyFiltersAndSort();
+    });
+</script>
 {% endblock %}

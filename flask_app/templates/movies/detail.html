@@ -19,12 +19,18 @@
             <div class="col-md-8 text-white">
                 <div class="d-flex gap-2 mb-3">
                     {% if movie.genre %}
-                        <a href="{{ url_for('movies', genre=movie.genre) }}" class="badge rounded-pill" style="background: var(--primary); text-decoration: none;">
-                            {{ movie.genre }}
-                        </a>
+                        {% for g in movie.genre.split(',') %}
+                            {% set g2 = g.strip() %}
+                            {% if g2 %}
+                                <a href="{{ url_for('movies', genre=g2) }}" class="badge rounded-pill" style="background: var(--primary); text-decoration: none;">
+                                    {{ g2 }}
+                                </a>
+                            {% endif %}
+                        {% endfor %}
                     {% endif %}
                     {% if movie.rating %}
-                        <span class="badge rounded-pill bg-warning text-dark">{{ movie.rating }}</span>
+                        {% set first_rating = movie.rating.split(',')[0].strip() %}
+                        <span class="badge rounded-pill bg-warning text-dark">{{ first_rating }}</span>
                     {% endif %}
                 </div>
                 

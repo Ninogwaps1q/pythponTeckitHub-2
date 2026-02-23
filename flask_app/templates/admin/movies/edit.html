@@ -31,12 +31,13 @@
                         
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Genre</label>
-                            <select class="form-select" name="genre">
-                                <option value="">Select genre</option>
+                            {% set selected_genres = movie.genre.split(',')|map('trim')|list if movie.genre else [] %}
+                            <select class="form-select" name="genre" multiple size="6">
                                 {% for g in ['Action', 'Comedy', 'Drama', 'Horror', 'Sci-Fi', 'Romance', 'Thriller', 'Animation', 'Documentary'] %}
-                                    <option value="{{ g }}" {{ 'selected' if movie.genre == g }}>{{ g }}</option>
+                                    <option value="{{ g }}" {{ 'selected' if g in selected_genres }}>{{ g }}</option>
                                 {% endfor %}
                             </select>
+                            <small class="text-muted">Select multiple genres (Ctrl/⌘ + click)</small>
                         </div>
                         
                         <div class="col-md-6">
@@ -46,10 +47,11 @@
                         
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Rating</label>
+                            {% set selected_rating = movie.rating.split(',')[0].strip() if movie.rating else '' %}
                             <select class="form-select" name="rating">
                                 <option value="">Select rating</option>
                                 {% for r in ['G', 'PG', 'SPG', 'R', 'NC-17'] %}
-                                    <option value="{{ r }}" {{ 'selected' if movie.rating == r }}>{{ r }}</option>
+                                    <option value="{{ r }}" {{ 'selected' if selected_rating == r }}>{{ r }}</option>
                                 {% endfor %}
                             </select>
                         </div>

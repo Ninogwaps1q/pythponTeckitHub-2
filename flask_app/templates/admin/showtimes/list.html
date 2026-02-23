@@ -35,7 +35,7 @@
                             <td class="py-3">{{ showtime.cinema.name }}</td>
                             <td class="py-3">{{ showtime.show_date.strftime('%b %d, %Y') }}</td>
                             <td class="py-3">{{ showtime.show_time.strftime('%I:%M %p') }}</td>
-                            <td class="py-3">${{ "%.2f"|format(showtime.price) }}</td>
+                            <td class="py-3">₱{{ "%.2f"|format(showtime.price) }}</td>
                             <td class="py-3">{{ showtime.available_seats }} seats</td>
                         </tr>
                         {% endfor %}

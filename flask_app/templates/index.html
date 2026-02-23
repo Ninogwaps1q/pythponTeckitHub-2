@@ -139,7 +139,12 @@
                             </div>
                             <div class="d-flex gap-2 mb-3">
                                 {% if movie.genre %}
-                                    <span class="genre-badge">{{ movie.genre }}</span>
+                                    {% for g in movie.genre.split(',') %}
+                                        {% set g2 = g.strip() %}
+                                        {% if g2 %}
+                                            <span class="genre-badge">{{ g2 }}</span>
+                                        {% endif %}
+                                    {% endfor %}
                                 {% endif %}
                                 {% if movie.duration %}
                                     <span class="genre-badge"><i class="bi bi-clock me-1"></i>{{ movie.duration }} min</span>

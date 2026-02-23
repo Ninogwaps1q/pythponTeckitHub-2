@@ -35,7 +35,7 @@
                 <td class="py-4 px-6 text-gray-600">{{ bus.origin }} → {{ bus.destination }}</td>
                 <td class="py-4 px-6 text-gray-600">{{ bus.departure_time.strftime('%H:%M') }}</td>
                 <td class="py-4 px-6 text-gray-600">{{ bus.arrival_time.strftime('%H:%M') }}</td>
-                <td class="py-4 px-6 text-gray-600">${{ "%.2f"|format(bus.price) }}</td>
+                <td class="py-4 px-6 text-gray-600">₱{{ "%.2f"|format(bus.price) }}</td>
                 <td class="py-4 px-6 text-gray-600">{{ bus.available_seats }}/{{ bus.total_seats }}</td>
                 <td class="py-4 px-6">
                     <div class="flex items-center gap-2">

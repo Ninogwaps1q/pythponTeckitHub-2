@@ -67,7 +67,7 @@ def paymongo_headers():
     """
     secret_key = os.environ.get("PAYMONGO_SECRET_KEY")
     if not secret_key:
-        print("[PayMongo] ⚠️  WARNING: PAYMONGO_SECRET_KEY not set in environment!")
+        print("[PayMongo] WARNING: PAYMONGO_SECRET_KEY not set in environment!")
         return {
             "Authorization": "Basic MISSING_KEY",
             "Content-Type": "application/json"
@@ -583,6 +583,127 @@ def generate_booking_reference():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
 
 
+def normalize_multi_value(values):
+    """Normalize multi-select or comma-separated values into a canonical ', ' string.
+
+    Accepts a list/tuple/set (from request.form.getlist) or a string.
+    Returns None if no non-empty values are provided.
+    """
+    if values is None:
+        return None
+
+    items = []
+    if isinstance(values, (list, tuple, set)):
+        for v in values:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            items.append(s)
+    else:
+        # Backward compatible: allow comma-separated strings.
+        s = str(values).strip()
+        if s:
+            items.extend([p.strip() for p in s.split(',') if p and p.strip()])
+
+    # De-dupe while preserving order (case-insensitive).
+    seen = set()
+    out = []
+    for it in items:
+        key = it.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+
+    return ', '.join(out) if out else None
+
+
+def get_showtime_total_seats(showtime):
+    """Return the seat capacity for a showtime (prefer cinema.total_seats)."""
+    try:
+        if showtime.cinema and showtime.cinema.total_seats:
+            return int(showtime.cinema.total_seats)
+    except Exception:
+        pass
+    return int(showtime.available_seats or 0)
+
+
+def get_reserved_movie_seats(showtime_id, statuses=None):
+    """Return (reserved_seat_set, unknown_reserved_count) for a showtime.
+
+    Seats are considered reserved if the booking is in a reserved payment status.
+    If a booking has no explicit seat_numbers, we account for its num_tickets as
+    unknown reservations for availability counting.
+    """
+    if not statuses:
+        statuses = ['pending', 'paid', 'completed']
+
+    reserved = set()
+    unknown = 0
+    bookings = MovieBooking.query.filter(
+        MovieBooking.showtime_id == showtime_id,
+        MovieBooking.payment_status.in_(statuses)
+    ).all()
+
+    for b in bookings:
+        if b.seat_numbers:
+            for s in b.seat_numbers.split(','):
+                s2 = (s or '').strip()
+                if s2:
+                    reserved.add(s2)
+        else:
+            unknown += int(b.num_tickets or 0)
+
+    return reserved, unknown
+
+
+def get_reserved_bus_seats(schedule_id, statuses=None):
+    """Return (reserved_seat_set, unknown_reserved_count) for a bus schedule.
+
+    Seats are considered reserved if the booking is in a reserved payment status.
+    If a booking has no explicit seat_numbers, we account for its num_tickets as
+    unknown reservations for availability counting.
+    """
+    if not statuses:
+        statuses = ['pending', 'paid', 'completed']
+
+    reserved = set()
+    unknown = 0
+    bookings = BusBooking.query.filter(
+        BusBooking.schedule_id == schedule_id,
+        BusBooking.payment_status.in_(statuses)
+    ).all()
+
+    for b in bookings:
+        if b.seat_numbers:
+            for s in b.seat_numbers.split(','):
+                s2 = (s or '').strip()
+                if s2:
+                    reserved.add(s2)
+        else:
+            unknown += int(b.num_tickets or 0)
+
+    return reserved, unknown
+
+
+def is_valid_showtime_seat_label(seat_label, total_seats, cols=10):
+    """Validate 'row-col' label within 1..total_seats given fixed column count."""
+    try:
+        parts = str(seat_label).split('-')
+        if len(parts) != 2:
+            return False
+        r = int(parts[0])
+        c = int(parts[1])
+        if r <= 0 or c <= 0 or c > cols:
+            return False
+        seat_index = (r - 1) * cols + c
+        return 1 <= seat_index <= int(total_seats or 0)
+    except Exception:
+        return False
+
+
 # ==================== ROUTES - MAIN ====================
 
 @app.route('/')
@@ -733,8 +854,31 @@ def logout():
 
 @app.route('/movies')
 def movies():
-    movies = Movie.query.filter_by(is_active=True).order_by(Movie.release_date.desc()).all()
-    return render_template('movies/list.html', movies=movies)
+    selected_genre = (request.args.get('genre') or 'all').strip().lower()
+    q = (request.args.get('q') or '').strip()
+
+    query = Movie.query.filter_by(is_active=True)
+
+    if q:
+        query = query.filter(Movie.title.ilike(f'%{q}%'))
+
+    if selected_genre and selected_genre != 'all':
+        # Accept common variants and do a case-insensitive contains match so existing data like
+        # "Action, Comedy" or "Sci Fi" still matches.
+        genre_terms = [selected_genre]
+        if selected_genre in ('sci-fi', 'scifi', 'sci_fi', 'sci fi', 'sci'):
+            genre_terms = ['sci-fi', 'sci fi', 'scifi', 'sci_fi', 'science fiction']
+        from sqlalchemy import or_
+        genre_filters = [Movie.genre.ilike(f'%{t}%') for t in genre_terms]
+        query = query.filter(or_(*genre_filters))
+
+    movies = query.order_by(Movie.release_date.desc()).all()
+    return render_template(
+        'movies/list.html',
+        movies=movies,
+        selected_genre=selected_genre,
+        q=q
+    )
 
 
 @app.route('/movies/<int:movie_id>')
@@ -753,16 +897,28 @@ def book_movie(showtime_id):
     showtime = Showtime.query.get_or_404(showtime_id)
     
     if request.method == 'POST':
-        num_tickets = int(request.form.get('num_tickets', 1))
-        seat_numbers = request.form.get('seat_numbers', '')
-        
-        # Basic availability check
-        if num_tickets > (showtime.available_seats or 0):
-            flash('Not enough seats available.', 'error')
+        # Compute real-time availability based on cinema capacity minus reserved bookings.
+        total_seats = get_showtime_total_seats(showtime)
+        reserved_seats, reserved_unknown = get_reserved_movie_seats(showtime_id, statuses=['pending', 'paid', 'completed'])
+        remaining = max(0, int(total_seats) - len(reserved_seats) - int(reserved_unknown))
+
+        try:
+            num_tickets = int(request.form.get('num_tickets', 1))
+        except Exception:
+            num_tickets = 1
+        seat_numbers = request.form.get('seat_numbers', '') or ''
+
+        if num_tickets <= 0:
+            flash('Please select at least 1 ticket.', 'error')
+            return redirect(url_for('book_movie', showtime_id=showtime_id))
+
+        # Availability check (includes pending/booking reservations)
+        if num_tickets > remaining:
+            flash(f'Not enough seats available. Remaining seats: {remaining}.', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
 
         # Validate seat selection: parse and ensure count matches
-        selected = [s.strip() for s in seat_numbers.split(',') if s.strip()]
+        selected = [s.strip() for s in seat_numbers.split(',') if s and s.strip()]
         if len(selected) != num_tickets:
             flash(f'Please select exactly {num_tickets} seat(s).', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
@@ -772,30 +928,27 @@ def book_movie(showtime_id):
             flash('Duplicate seat selection detected. Please choose different seats.', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
 
-        # Check against already reserved seats (pending/paid/completed)
-        reserved_statuses = ['pending', 'paid', 'completed']
-        existing = MovieBooking.query.filter(MovieBooking.showtime_id == showtime_id, MovieBooking.payment_status.in_(reserved_statuses)).all()
-        reserved = set()
-        for b in existing:
-            if b.seat_numbers:
-                for s in b.seat_numbers.split(','):
-                    s2 = s.strip()
-                    if s2:
-                        reserved.add(s2)
+        # Validate seat labels are within cinema capacity
+        invalid = [s for s in selected if not is_valid_showtime_seat_label(s, total_seats, cols=10)]
+        if invalid:
+            flash(f'Invalid seat selection: {", ".join(invalid)}.', 'error')
+            return redirect(url_for('book_movie', showtime_id=showtime_id))
 
-        conflicts = [s for s in selected if s in reserved]
+        # Check against already reserved seats (pending/paid/completed)
+        conflicts = [s for s in selected if s in reserved_seats]
         if conflicts:
             flash(f'The following seat(s) are no longer available: {", ".join(conflicts)}. Please choose different seats.', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
         
-        total_amount = num_tickets * showtime.price
+        total_amount = num_tickets * float(showtime.price or 0)
         booking_ref = generate_booking_reference()
+        seat_numbers_normalized = ','.join(selected)
         
         booking = MovieBooking(
             user_id=current_user.id,
             showtime_id=showtime_id,
             num_tickets=num_tickets,
-            seat_numbers=seat_numbers,
+            seat_numbers=seat_numbers_normalized,
             total_amount=total_amount,
             booking_reference=booking_ref
         )
@@ -804,7 +957,10 @@ def book_movie(showtime_id):
         
         return redirect(url_for('payment', booking_type='movie', booking_id=booking.id))
     
-    return render_template('movies/book.html', showtime=showtime)
+    total_seats = get_showtime_total_seats(showtime)
+    reserved_seats, reserved_unknown = get_reserved_movie_seats(showtime_id, statuses=['pending', 'paid', 'completed'])
+    remaining = max(0, int(total_seats) - len(reserved_seats) - int(reserved_unknown))
+    return render_template('movies/book.html', showtime=showtime, cinema_total_seats=total_seats, seats_remaining=remaining)
 
 
 # ==================== ROUTES - BUS ====================
@@ -842,49 +998,101 @@ def search_bus():
 def book_bus(route_id):
     route = BusRoute.query.get_or_404(route_id)
     travel_date = request.args.get('date', datetime.now().date().isoformat())
-    
+
     # Get or create schedule for the date
+    try:
+        parsed_date = datetime.strptime(travel_date, '%Y-%m-%d').date()
+    except Exception:
+        parsed_date = datetime.now().date()
+        travel_date = parsed_date.isoformat()
     schedule = BusSchedule.query.filter_by(
         route_id=route_id,
-        travel_date=datetime.strptime(travel_date, '%Y-%m-%d').date()
+        travel_date=parsed_date
     ).first()
-    
+
     if not schedule:
         schedule = BusSchedule(
             route_id=route_id,
-            travel_date=datetime.strptime(travel_date, '%Y-%m-%d').date(),
+            travel_date=parsed_date,
             available_seats=route.total_seats
         )
         db.session.add(schedule)
         db.session.commit()
-    
+
+    total_seats = int(route.total_seats or schedule.available_seats or 0)
+    reserved_seats, reserved_unknown = get_reserved_bus_seats(schedule.id, statuses=['pending', 'paid', 'completed'])
+    remaining = max(0, total_seats - len(reserved_seats) - int(reserved_unknown))
+
     if request.method == 'POST':
-        num_tickets = int(request.form.get('num_tickets', 1))
-        seat_numbers = request.form.get('seat_numbers', '')
+        try:
+            num_tickets = int(request.form.get('num_tickets', 1))
+        except Exception:
+            num_tickets = 1
+        seat_numbers = request.form.get('seat_numbers', '') or ''
         passenger_names = request.form.get('passenger_names', '')
-        
-        if num_tickets > schedule.available_seats:
-            flash('Not enough seats available.', 'error')
+
+        if num_tickets <= 0:
+            flash('Please select at least 1 passenger.', 'error')
             return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
-        
+
+        # Availability check (includes pending/paid/completed reservations)
+        if num_tickets > remaining:
+            flash(f'Not enough seats available. Remaining seats: {remaining}.', 'error')
+            return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
+
+        # Optional seat selection validation (if seat_numbers is provided)
+        selected = [s.strip() for s in seat_numbers.split(',') if s and s.strip()]
+        if seat_numbers.strip():
+            if len(selected) != num_tickets:
+                flash(f'Please select exactly {num_tickets} seat(s).', 'error')
+                return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
+
+            if len(set(selected)) != len(selected):
+                flash('Duplicate seat selection detected. Please choose different seats.', 'error')
+                return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
+
+            invalid = []
+            for s in selected:
+                try:
+                    n = int(str(s).strip())
+                    if n < 1 or n > total_seats:
+                        invalid.append(s)
+                except Exception:
+                    invalid.append(s)
+            if invalid:
+                flash(f'Invalid seat selection: {", ".join(invalid)}.', 'error')
+                return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
+
+            conflicts = [s for s in selected if s in reserved_seats]
+            if conflicts:
+                flash(f'The following seat(s) are no longer available: {", ".join(conflicts)}. Please choose different seats.', 'error')
+                return redirect(url_for('book_bus', route_id=route_id, date=travel_date))
+
         total_amount = num_tickets * route.price
         booking_ref = generate_booking_reference()
-        
+        seat_numbers_normalized = ','.join(selected) if selected else None
+
         booking = BusBooking(
             user_id=current_user.id,
             schedule_id=schedule.id,
             num_tickets=num_tickets,
-            seat_numbers=seat_numbers,
+            seat_numbers=seat_numbers_normalized,
             passenger_names=passenger_names,
             total_amount=total_amount,
             booking_reference=booking_ref
         )
         db.session.add(booking)
         db.session.commit()
-        
+
         return redirect(url_for('payment', booking_type='bus', booking_id=booking.id))
-    
-    return render_template('bus/book.html', route=route, schedule=schedule, travel_date=travel_date)
+
+    return render_template(
+        'bus/book.html',
+        route=route,
+        schedule=schedule,
+        travel_date=travel_date,
+        seats_remaining=remaining
+    )
 
 
 # ==================== ROUTES - PAYMENT ====================
@@ -1117,12 +1325,8 @@ def get_booked_seats():
     # Consider any booking that is pending, paid or completed as reserved for seat selection
     booked_seats = []
     try:
-        statuses = ['pending', 'paid', 'completed']
-        bookings = MovieBooking.query.filter(MovieBooking.showtime_id == showtime_id, MovieBooking.payment_status.in_(statuses)).all()
-        for booking in bookings:
-            if booking.seat_numbers:
-                seats = [s.strip() for s in booking.seat_numbers.split(',') if s.strip()]
-                booked_seats.extend(seats)
+        reserved, _unknown = get_reserved_movie_seats(showtime_id, statuses=['pending', 'paid', 'completed'])
+        booked_seats = sorted(list(reserved))
     except Exception as e:
         print(f"[Seats] Error fetching booked seats: {e}")
 
@@ -1159,16 +1363,10 @@ def api_showtime_seats(showtime_id):
     rows = math.ceil(total_seats / cols) if total_seats > 0 else 1
 
     # Gather reserved seats (pending/paid/completed)
-    reserved_statuses = ['pending', 'paid', 'completed']
     booked = []
     try:
-        bookings = MovieBooking.query.filter(MovieBooking.showtime_id == showtime_id, MovieBooking.payment_status.in_(reserved_statuses)).all()
-        for b in bookings:
-            if b.seat_numbers:
-                for s in b.seat_numbers.split(','):
-                    s2 = s.strip()
-                    if s2:
-                        booked.append(s2)
+        reserved, _unknown = get_reserved_movie_seats(showtime_id, statuses=['pending', 'paid', 'completed'])
+        booked = list(reserved)
     except Exception as e:
         print(f"[API] Error collecting booked seats for showtime {showtime_id}: {e}")
 
@@ -1217,27 +1415,25 @@ def api_schedule_seats(schedule_id):
     # Gather reserved seats
     reserved_statuses = ['pending', 'paid', 'completed']
     booked = []
+    unknown_reserved = 0
     try:
-        bookings = BusBooking.query.filter(BusBooking.schedule_id == schedule_id, BusBooking.payment_status.in_(reserved_statuses)).all()
-        for b in bookings:
-            if b.seat_numbers:
-                for s in b.seat_numbers.split(','):
-                    s2 = s.strip()
-                    if s2:
-                        booked.append(s2)
+        reserved, unknown_reserved = get_reserved_bus_seats(schedule_id, statuses=reserved_statuses)
+        booked = list(reserved)
     except Exception as e:
         print(f"[API] Error collecting booked seats for schedule {schedule_id}: {e}")
 
     all_seats = [str(i) for i in range(1, total + 1)]
     booked_set = set(booked)
     available = [s for s in all_seats if s not in booked_set]
+    available_count = max(0, total - len(booked_set) - int(unknown_reserved))
 
     return jsonify({
         'schedule_id': schedule_id,
         'total_seats': total,
         'booked_seats': sorted(list(booked_set), key=lambda x: int(x) if x.isdigit() else x),
         'available_seats': available,
-        'available_count': len(available)
+        'available_count': available_count,
+        'unknown_reserved_count': int(unknown_reserved or 0)
     }), 200
 
 
@@ -1245,34 +1441,16 @@ def api_schedule_seats(schedule_id):
 def get_booked_bus_seats():
     data = request.get_json()
     schedule_id = data.get('schedule_id')
-    
-    # Get all completed bookings for this bus schedule
-    bookings = BusBooking.query.filter_by(schedule_id=schedule_id, payment_status='completed').all()
-    
+
+    # Consider any booking that is pending, paid or completed as reserved for seat selection
     booked_seats = []
-    for booking in bookings:
-        if booking.seat_numbers:
-            seats = booking.seat_numbers.split(',')
-            booked_seats.extend(seats)
-    
+    try:
+        reserved, _unknown = get_reserved_bus_seats(schedule_id, statuses=['pending', 'paid', 'completed'])
+        booked_seats = sorted(list(reserved), key=lambda x: int(x) if str(x).isdigit() else str(x))
+    except Exception as e:
+        print(f"[Bus Seats] Error fetching booked seats: {e}")
+
     return jsonify({'booked_seats': booked_seats})
-
-# ----------------------
-# Payment Page
-# ----------------------
-@app.route('/payment/<booking_type>/<int:booking_id>')
-@login_required
-def payment_page(booking_type, booking_id):
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
-
-    return render_template(
-        'payment.html',
-        booking=booking,
-        booking_type=booking_type
-    )
 
 @app.route('/payment-ewallet-pending', methods=['POST'])
 @login_required
@@ -2147,11 +2325,11 @@ def admin_movies():
 @admin_required
 def admin_add_movie():
     cinemas = Cinema.query.all()
-    
+
     if request.method == 'POST':
         title = request.form.get('title')
         description = request.form.get('description')
-        genre = request.form.get('genre')
+        genre = normalize_multi_value(request.form.getlist('genre') or request.form.get('genre'))
         duration = request.form.get('duration')
         rating = request.form.get('rating')
         trailer_url = request.form.get('trailer_url')
@@ -2194,11 +2372,11 @@ def admin_add_movie():
 @admin_required
 def admin_edit_movie(movie_id):
     movie = Movie.query.get_or_404(movie_id)
-    
+
     if request.method == 'POST':
         movie.title = request.form.get('title')
         movie.description = request.form.get('description')
-        movie.genre = request.form.get('genre')
+        movie.genre = normalize_multi_value(request.form.getlist('genre') or request.form.get('genre'))
         movie.duration = int(request.form.get('duration')) if request.form.get('duration') else None
         movie.rating = request.form.get('rating')
         movie.trailer_url = request.form.get('trailer_url')
@@ -2433,7 +2611,7 @@ RULES:
 • If unsure, suggest support@tickethub.com
 
 MYLOVE , who is my love, my langging:
-• princess
+• princess trazo
 
 DEVELOPER, who created you:
 • Nino Jay Manabat-Backend, Frontend Developer and AI Integration Specialist
@@ -2441,6 +2619,12 @@ DEVELOPER, who created you:
 • James Robert Cabezares-Database Designer
 • Louie Jay Plarisan-Documenter
 • Bryan Alipuyo-Documenter 
+
+MY BOKNAY , who is my boknay:
+• Joy Repollido
+
+BEAUTIFUL TEACHER , who is my beautiful teacher. instructor and mentor:
+• Sir Aries Dajay
 
 """
 
