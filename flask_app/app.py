@@ -17,8 +17,9 @@ from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from flask_mail import Mail, Message
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file.
+# override=True ensures local project .env is used even if stale shell env vars exist.
+load_dotenv(override=True)
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='/static')
@@ -65,9 +66,13 @@ def paymongo_headers():
     Returns the headers needed to authenticate with PayMongo API.
     Reads the secret key from environment variables for security.
     """
-    secret_key = os.environ.get("PAYMONGO_SECRET_KEY")
+    secret_key = (
+        os.environ.get("PAYMONGO_SECRET_KEY")
+        or os.environ.get("PAYMONGO_API_KEY")
+        or os.environ.get("PAYMOONGO_API_KEY")
+    )
     if not secret_key:
-        print("[PayMongo] WARNING: PAYMONGO_SECRET_KEY not set in environment!")
+        print("[PayMongo] WARNING: PAYMONGO_SECRET_KEY (or PAYMONGO_API_KEY/PAYMOONGO_API_KEY) not set in environment!")
         return {
             "Authorization": "Basic MISSING_KEY",
             "Content-Type": "application/json"
@@ -82,6 +87,54 @@ def paymongo_headers():
         "Authorization": f"Basic {auth_b64}",
         "Content-Type": "application/json"
     }
+
+
+def parse_paymongo_error(resp_data):
+    """
+    Normalize PayMongo error payloads into a consistent shape.
+    PayMongo may return either {"error": {...}} or {"errors": [{...}]}.
+    """
+    default_msg = "Unknown error"
+    default_code = "unknown"
+
+    if not isinstance(resp_data, dict):
+        return default_msg, default_code, None
+
+    error_obj = resp_data.get("error")
+    if isinstance(error_obj, dict) and error_obj:
+        error_msg = (
+            error_obj.get("message")
+            or error_obj.get("detail")
+            or error_obj.get("title")
+            or error_obj.get("description")
+            or default_msg
+        )
+        error_code = error_obj.get("code") or error_obj.get("status") or default_code
+        return str(error_msg), str(error_code), error_obj
+
+    errors = resp_data.get("errors")
+    if isinstance(errors, list) and errors:
+        first_error = errors[0] if isinstance(errors[0], dict) else {}
+        error_msg = (
+            first_error.get("detail")
+            or first_error.get("message")
+            or first_error.get("title")
+            or resp_data.get("message")
+            or default_msg
+        )
+        error_code = (
+            first_error.get("code")
+            or first_error.get("status")
+            or first_error.get("id")
+            or default_code
+        )
+        return str(error_msg), str(error_code), errors
+
+    top_level_msg = resp_data.get("message")
+    if top_level_msg:
+        return str(top_level_msg), default_code, resp_data
+
+    return default_msg, default_code, resp_data if resp_data else None
 
 
 # ==================== PayMongo Helper Functions ====================
@@ -1452,17 +1505,47 @@ def get_booked_bus_seats():
 
     return jsonify({'booked_seats': booked_seats})
 
-@app.route('/payment-ewallet-pending', methods=['POST'])
+@app.route('/payment-ewallet-pending', methods=['GET', 'POST'])
 @login_required
 def payment_ewallet_pending():
-    data = request.get_json()
-    booking_type = data.get("booking_type")
-    booking_id = data.get("booking_id")
-    payment_method = data.get("payment_method")  # gcash, paymaya, paypal, card
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or request.form.to_dict()
+    else:
+        data = request.args.to_dict()
+
+    booking_type = (data.get("booking_type") or "").strip().lower()
+    booking_id_raw = data.get("booking_id")
+    payment_method = (data.get("payment_method") or "").strip()
+    redirect_mode = str(data.get("redirect", "")).strip().lower() in ("1", "true", "yes")
+
+    def respond_error(message, status_code=400, error_code=None, details=None):
+        if redirect_mode:
+            flash(message, 'error')
+            try:
+                if booking_type and booking_id_raw:
+                    return redirect(url_for('payment', booking_type=booking_type, booking_id=int(booking_id_raw)))
+            except Exception:
+                pass
+            return redirect(url_for('index'))
+
+        error_response = {"success": False, "error": message}
+        if error_code:
+            error_response["error_code"] = error_code
+        if details:
+            error_response["details"] = details
+        return jsonify(error_response), status_code
 
     # Validate required fields
-    if not all([booking_type, booking_id, payment_method]):
-        return jsonify({"success": False, "error": "Missing required fields: booking_type, booking_id, payment_method"}), 400
+    if not all([booking_type, booking_id_raw, payment_method]):
+        return respond_error("Missing required fields: booking_type, booking_id, payment_method", 400)
+
+    try:
+        booking_id = int(booking_id_raw)
+    except (TypeError, ValueError):
+        return respond_error("Invalid booking id", 400)
+
+    if booking_type not in ('movie', 'bus'):
+        return respond_error("Invalid booking type. Expected 'movie' or 'bus'.", 400)
 
     # Get booking
     try:
@@ -1471,20 +1554,23 @@ def payment_ewallet_pending():
         else:
             booking = BusBooking.query.get_or_404(booking_id)
     except Exception as e:
-        return jsonify({"success": False, "error": f"Booking not found: {str(e)}"}), 404
+        return respond_error(f"Booking not found: {str(e)}", 404)
+
+    if booking.user_id != current_user.id:
+        return respond_error("Unauthorized access.", 403)
 
     # Normalize payment method type
     pm_type = payment_method.lower().strip()
-    
+
     # PayMongo valid source types
     valid_types = ["gcash", "paymaya", "paypal", "card", "grab_pay", "ddoc"]
     if pm_type not in valid_types:
-        return jsonify({"success": False, "error": f"Invalid payment method: {pm_type}. Valid types: {', '.join(valid_types)}"}), 400
+        return respond_error(f"Invalid payment method: {pm_type}. Valid types: {', '.join(valid_types)}", 400)
 
     try:
         amount = int(booking.total_amount * 100)
         if amount <= 0:
-            return jsonify({"success": False, "error": "Invalid booking amount"}), 400
+            return respond_error("Invalid booking amount", 400)
 
         success_url = url_for('payment_success_page', booking_type=booking_type, booking_id=booking.id, _external=True)
         failed_url = success_url
@@ -1511,24 +1597,27 @@ def payment_ewallet_pending():
         print(f"\n[PayMongo] ========== REQUEST ==========")
         print(f"[PayMongo] Endpoint: POST https://api.paymongo.com/v1/sources")
         print(f"[PayMongo] Payment Type: {pm_type}")
-        print(f"[PayMongo] Amount: {amount} centavos (₱{booking.total_amount})")
+        print(f"[PayMongo] Amount: {amount} centavos (P{booking.total_amount})")
         print(f"[PayMongo] Booking: {booking_type} #{booking_id}")
-        
+
         headers = paymongo_headers()
         print(f"[PayMongo] Auth Header: {headers.get('Authorization', 'MISSING')[:20]}...")
         print(f"[PayMongo] Payload: {payload}\n")
-        
+
+        if headers.get("Authorization") == "Basic MISSING_KEY":
+            return respond_error("PayMongo secret key is missing. Set PAYMONGO_SECRET_KEY in .env.", 500)
+
         resp = requests.post(
-            'https://api.paymongo.com/v1/sources', 
-            json=payload, 
-            headers=headers, 
+            'https://api.paymongo.com/v1/sources',
+            json=payload,
+            headers=headers,
             timeout=15
         )
-        
+
         print(f"[PayMongo] ========== RESPONSE ==========")
         print(f"[PayMongo] Status Code: {resp.status_code}")
         print(f"[PayMongo] Content-Type: {resp.headers.get('content-type', 'unknown')}")
-        
+
         # Try to parse JSON, but handle cases where response is not JSON
         try:
             resp_data = resp.json()
@@ -1536,37 +1625,39 @@ def payment_ewallet_pending():
         except ValueError as je:
             print(f"[PayMongo] Failed to parse JSON: {str(je)}")
             print(f"[PayMongo] Raw Response Text: {resp.text[:500]}")
-            return jsonify({
-                "success": False,
-                "error": f"PayMongo returned invalid response (status {resp.status_code})",
-                "details": resp.text[:200] if resp.text else "Empty response"
-            }), 500
-        
+            return respond_error(
+                f"PayMongo returned invalid response (status {resp.status_code})",
+                500,
+                details=resp.text[:200] if resp.text else "Empty response"
+            )
+
         if resp.status_code not in (200, 201):
-            error_msg = resp_data.get('error', {}).get('message', 'Unknown error')
-            error_code = resp_data.get('error', {}).get('code', 'unknown')
-            print(f"[PayMongo] ❌ ERROR - Code: {error_code}, Message: {error_msg}\n")
-            return jsonify({
-                "success": False, 
-                "error": f"PayMongo request failed: {error_msg}",
-                "error_code": error_code,
-                "details": resp_data.get('error', {})
-            }), 400
-        
+            error_msg, error_code, error_details = parse_paymongo_error(resp_data)
+            print(f"[PayMongo] ERROR - Code: {error_code}, Message: {error_msg}\n")
+            return respond_error(
+                f"PayMongo request failed: {error_msg}",
+                resp.status_code,
+                error_code=error_code,
+                details=error_details if error_details else (resp.text[:200] if resp.text else None)
+            )
+
         source_id = resp_data.get('data', {}).get('id')
         attrs = resp_data.get('data', {}).get('attributes', {})
         redirect_info = attrs.get('redirect', {}) if isinstance(attrs, dict) else {}
         checkout_url = redirect_info.get('checkout_url') or redirect_info.get('url') or redirect_info.get('redirect_url')
 
-        print(f"[PayMongo] ✓ SUCCESS")
+        print(f"[PayMongo] SUCCESS")
         print(f"[PayMongo] Source ID: {source_id}")
         print(f"[PayMongo] Checkout URL: {checkout_url}\n")
+
+        if not checkout_url:
+            return respond_error("PayMongo did not return a checkout URL. Please try again.", 502)
 
         # Mark booking as pending and store reference
         booking.payment_status = 'pending'
         booking.payment_method = pm_type
         booking.payment_reference = source_id
-        
+
         # Log the payment transaction
         log_payment_transaction(
             user_id=current_user.id,
@@ -1580,6 +1671,9 @@ def payment_ewallet_pending():
         )
         db.session.commit()
 
+        if redirect_mode:
+            return redirect(checkout_url)
+
         return jsonify({
             "success": True,
             "checkout_url": checkout_url,
@@ -1588,19 +1682,19 @@ def payment_ewallet_pending():
             "source_id": source_id
         })
     except requests.exceptions.Timeout:
-        print(f"[PayMongo] ❌ TIMEOUT - Request took longer than 15 seconds\n")
-        return jsonify({"success": False, "error": "PayMongo request timed out. Please try again."}), 500
+        print(f"[PayMongo] TIMEOUT - Request took longer than 15 seconds\n")
+        return respond_error("PayMongo request timed out. Please try again.", 500)
     except requests.exceptions.ConnectionError as e:
-        print(f"[PayMongo] ❌ CONNECTION ERROR: {str(e)}\n")
-        return jsonify({"success": False, "error": f"Failed to connect to PayMongo: {str(e)}"}), 500
+        print(f"[PayMongo] CONNECTION ERROR: {str(e)}\n")
+        return respond_error(f"Failed to connect to PayMongo: {str(e)}", 500)
     except requests.RequestException as e:
-        print(f"[PayMongo] ❌ REQUEST ERROR: {str(e)}\n")
-        return jsonify({"success": False, "error": f"PayMongo request failed: {str(e)}"}), 500
+        print(f"[PayMongo] REQUEST ERROR: {str(e)}\n")
+        return respond_error(f"PayMongo request failed: {str(e)}", 500)
     except Exception as e:
-        print(f"[PayMongo] ❌ UNEXPECTED ERROR: {str(e)}\n")
+        print(f"[PayMongo] UNEXPECTED ERROR: {str(e)}\n")
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+        return respond_error(f"Server error: {str(e)}", 500)
 
 
 # ----------------------
@@ -1970,7 +2064,11 @@ def test_paymongo():
     """Test PayMongo connection and credentials"""
     print("\n[Diagnostics] Testing PayMongo connection...\n")
     
-    secret_key = os.environ.get("PAYMONGO_SECRET_KEY")
+    secret_key = (
+        os.environ.get("PAYMONGO_SECRET_KEY")
+        or os.environ.get("PAYMONGO_API_KEY")
+        or os.environ.get("PAYMOONGO_API_KEY")
+    )
     public_key = os.environ.get("PAYMONGO_PUBLIC_KEY")
     
     result = {
@@ -2031,12 +2129,16 @@ def test_paymongo():
             headers=paymongo_headers(),
             timeout=10
         )
-        resp_data = resp.json() if resp.status_code in (200, 201) else {}
+        try:
+            resp_data = resp.json()
+        except ValueError:
+            resp_data = {}
+        error_msg, _, _ = parse_paymongo_error(resp_data) if resp.status_code not in (200, 201) else (None, None, None)
         result["tests"]["create_card_source"] = {
             "status": resp.status_code,
             "success": resp.status_code in (200, 201),
             "message": "✓ Card source created" if resp.status_code in (200, 201) else f"✗ HTTP {resp.status_code}",
-            "error": resp_data.get('error', {}).get('message') if resp.status_code not in (200, 201) else None
+            "error": error_msg
         }
         print(f"[Diagnostics] Status: {resp.status_code} - {result['tests']['create_card_source']['message']}")
     except Exception as e:
@@ -2069,12 +2171,16 @@ def test_paymongo():
             headers=paymongo_headers(),
             timeout=10
         )
-        resp_data = resp.json() if resp.status_code in (200, 201) else {}
+        try:
+            resp_data = resp.json()
+        except ValueError:
+            resp_data = {}
+        error_msg, _, _ = parse_paymongo_error(resp_data) if resp.status_code not in (200, 201) else (None, None, None)
         result["tests"]["create_gcash_source"] = {
             "status": resp.status_code,
             "success": resp.status_code in (200, 201),
             "message": "✓ GCash source created" if resp.status_code in (200, 201) else f"✗ HTTP {resp.status_code}",
-            "error": resp_data.get('error', {}).get('message') if resp.status_code not in (200, 201) else None
+            "error": error_msg
         }
         print(f"[Diagnostics] Status: {resp.status_code} - {result['tests']['create_gcash_source']['message']}")
     except Exception as e:
@@ -2107,12 +2213,16 @@ def test_paymongo():
             headers=paymongo_headers(),
             timeout=10
         )
-        resp_data = resp.json() if resp.status_code in (200, 201) else {}
+        try:
+            resp_data = resp.json()
+        except ValueError:
+            resp_data = {}
+        error_msg, _, _ = parse_paymongo_error(resp_data) if resp.status_code not in (200, 201) else (None, None, None)
         result["tests"]["create_paymaya_source"] = {
             "status": resp.status_code,
             "success": resp.status_code in (200, 201),
             "message": "✓ PayMaya source created" if resp.status_code in (200, 201) else f"✗ HTTP {resp.status_code}",
-            "error": resp_data.get('error', {}).get('message') if resp.status_code not in (200, 201) else None
+            "error": error_msg
         }
         print(f"[Diagnostics] Status: {resp.status_code} - {result['tests']['create_paymaya_source']['message']}")
     except Exception as e:

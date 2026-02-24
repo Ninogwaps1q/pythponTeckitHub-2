@@ -191,7 +191,7 @@ paymentMethods.forEach(method => {
 });
 
 // Handle payment submission
-document.getElementById('proceed-payment').addEventListener('click', async function() {
+document.getElementById('proceed-payment').addEventListener('click', function() {
     const selectedMethod = document.querySelector('input[name="payment_method"]:checked')?.value;
     
     if (!selectedMethod) {
@@ -199,10 +199,10 @@ document.getElementById('proceed-payment').addEventListener('click', async funct
         return;
     }
 
-    await processPayment(selectedMethod);
+    processPayment(selectedMethod);
 });
 
-async function processPayment(method) {
+function processPayment(method) {
     const button = document.getElementById('proceed-payment');
     const buttonText = document.getElementById('button-text');
     const spinner = document.getElementById('loading-spinner');
@@ -212,51 +212,14 @@ async function processPayment(method) {
     buttonText.classList.add('d-none');
     spinner.classList.add('show');
 
-    try {
-        const response = await fetch('/payment-ewallet-pending', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                booking_type: '{{ booking_type }}',
-                booking_id: {{ booking.id }},
-                payment_method: method,
-                gateway: 'paymongo'
-            })
-        });
-
-        const data = await response.json();
-
-        if (!data.success) {
-            // Show detailed error message including PayMongo error if available
-            let errorMsg = data.error || 'Failed to initiate payment';
-            if (data.details) {
-                errorMsg += ` (${JSON.stringify(data.details)})`;
-            }
-            showError(errorMsg);
-            button.disabled = false;
-            buttonText.classList.remove('d-none');
-            spinner.classList.remove('show');
-            return;
-        }
-
-        if (!data.checkout_url) {
-            showError('No payment checkout URL provided');
-            button.disabled = false;
-            buttonText.classList.remove('d-none');
-            spinner.classList.remove('show');
-            return;
-        }
-
-        // All supported methods use PayMongo checkout (gcash, card, paymaya, paypal)
-        window.location.href = data.checkout_url;
-
-    } catch (error) {
-        console.error('Payment error:', error);
-        showError('Payment initiation failed: ' + error.message);
-        button.disabled = false;
-        buttonText.classList.remove('d-none');
-        spinner.classList.remove('show');
-    }
+    // Redirect flow: backend creates source and then redirects to PayMongo checkout page.
+    const params = new URLSearchParams({
+        booking_type: '{{ booking_type }}',
+        booking_id: '{{ booking.id }}',
+        payment_method: method,
+        redirect: '1'
+    });
+    window.location.href = `/payment-ewallet-pending?${params.toString()}`;
 }
 
 
