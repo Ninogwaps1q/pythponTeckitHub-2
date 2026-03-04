@@ -9,7 +9,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 import requests
 import google.generativeai as genai
@@ -137,7 +137,240 @@ def parse_paymongo_error(resp_data):
     return default_msg, default_code, resp_data if resp_data else None
 
 
+CHECKOUT_METHOD_ALIASES = {
+    "card": "card",
+    "credit_card": "card",
+    "debit_card": "card",
+    "gcash": "gcash",
+    "paymaya": "maya",
+    "maya": "maya",
+}
+
+CHECKOUT_SUPPORTED_METHODS = {
+    "card",
+    "gcash",
+    "maya",
+}
+
+
+def normalize_checkout_payment_method(method_name):
+    raw_method = str(method_name or "").strip().lower()
+    if not raw_method:
+        return ""
+    return CHECKOUT_METHOD_ALIASES.get(raw_method, raw_method)
+
+
+def build_checkout_session_payload(
+    amount_cents,
+    booking_reference,
+    success_url,
+    cancel_url,
+    payment_method_types,
+    metadata=None,
+    description=None,
+    customer_email=None,
+):
+    line_item = {
+        "currency": "PHP",
+        "amount": int(amount_cents),
+        "name": "TicketHub Booking",
+        "quantity": 1,
+    }
+
+    if description:
+        line_item["description"] = description
+
+    attributes = {
+        "line_items": [line_item],
+        "payment_method_types": payment_method_types,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "description": description or f"TicketHub Booking {booking_reference}",
+        "reference_number": booking_reference,
+        "metadata": metadata or {},
+        "send_email_receipt": False,
+        "show_description": True,
+        "show_line_items": True,
+    }
+
+    if customer_email:
+        attributes["customer_email"] = customer_email
+
+    return {"data": {"attributes": attributes}}
+
+
+def checkout_session_is_paid(checkout_payload):
+    if not isinstance(checkout_payload, dict):
+        return False
+
+    data = checkout_payload.get("data", {})
+    attrs = data.get("attributes", {}) if isinstance(data, dict) else {}
+    if not isinstance(attrs, dict):
+        return False
+
+    direct_status = str(attrs.get("status", "")).strip().lower()
+    if direct_status in {"paid", "succeeded", "completed"}:
+        return True
+
+    # PayMongo includes payment_intent info inside checkout session attributes.
+    payment_intent = attrs.get("payment_intent", {})
+    pi_attrs = payment_intent.get("attributes", {}) if isinstance(payment_intent, dict) else {}
+    pi_status = str(pi_attrs.get("status", "")).strip().lower()
+    if pi_status in {"paid", "succeeded", "captured", "completed"}:
+        return True
+
+    # Fallback: if a payment object exists with a successful status, treat as paid.
+    payment_lists = []
+    top_level_payments = attrs.get("payments")
+    if isinstance(top_level_payments, list):
+        payment_lists.extend(top_level_payments)
+    nested_payments = pi_attrs.get("payments")
+    if isinstance(nested_payments, list):
+        payment_lists.extend(nested_payments)
+
+    for payment in payment_lists:
+        if isinstance(payment, str) and payment.strip():
+            return True
+        if not isinstance(payment, dict):
+            continue
+        payment_attrs = payment.get("attributes", {}) if isinstance(payment.get("attributes"), dict) else {}
+        payment_status = str(payment_attrs.get("status", "")).strip().lower()
+        if payment_status in {"paid", "succeeded", "captured", "completed"}:
+            return True
+
+    return False
+
+
+def get_booking_for_request(booking_type, booking_id):
+    if booking_type == 'movie':
+        return MovieBooking.query.get_or_404(booking_id)
+    if booking_type == 'bus':
+        return BusBooking.query.get_or_404(booking_id)
+    raise ValueError('Invalid booking type')
+
+
+def get_booking_or_none(booking_type, booking_id):
+    try:
+        booking_id = int(booking_id)
+    except Exception:
+        return None
+
+    if booking_type == 'movie':
+        return MovieBooking.query.get(booking_id)
+    if booking_type == 'bus':
+        return BusBooking.query.get(booking_id)
+    return None
+
+
+def infer_booking_type(booking):
+    if isinstance(booking, MovieBooking):
+        return 'movie'
+    if isinstance(booking, BusBooking):
+        return 'bus'
+    return None
+
+
+def find_booking_from_metadata(metadata=None, payment_reference=None):
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    booking_type = str(metadata.get('booking_type') or '').strip().lower()
+    booking_id = metadata.get('booking_id')
+    booking_reference = str(metadata.get('booking_reference') or '').strip()
+    booking = None
+
+    if booking_type in ('movie', 'bus') and booking_id is not None:
+        booking = get_booking_or_none(booking_type, booking_id)
+
+    if not booking and booking_reference:
+        booking = MovieBooking.query.filter_by(booking_reference=booking_reference).first()
+        if not booking:
+            booking = BusBooking.query.filter_by(booking_reference=booking_reference).first()
+
+    if not booking and payment_reference:
+        booking = MovieBooking.query.filter_by(payment_reference=payment_reference).first()
+        if not booking:
+            booking = BusBooking.query.filter_by(payment_reference=payment_reference).first()
+
+    return booking, (booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking))
+
+
+def mark_booking_paid(booking, booking_type=None, payment_method=None, payment_reference=None, completed_by=None):
+    if not booking:
+        return False
+
+    booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
+    if booking_type not in ('movie', 'bus'):
+        return False
+
+    updated = False
+    if payment_method and booking.payment_method != payment_method:
+        booking.payment_method = payment_method
+        updated = True
+
+    if payment_reference and booking.payment_reference != payment_reference:
+        booking.payment_reference = payment_reference
+        updated = True
+
+    already_paid = str(booking.payment_status or '').strip().lower() in ('paid', 'completed')
+    if already_paid:
+        if updated:
+            db.session.commit()
+        return False
+
+    booking.payment_status = 'paid'
+
+    if booking_type == 'movie':
+        try:
+            showtime = booking.showtime
+            if showtime and showtime.available_seats is not None:
+                showtime.available_seats = max(0, int(showtime.available_seats) - int(booking.num_tickets or 0))
+        except Exception:
+            pass
+    else:
+        try:
+            schedule = booking.schedule
+            if schedule and schedule.available_seats is not None:
+                schedule.available_seats = max(0, int(schedule.available_seats) - int(booking.num_tickets or 0))
+        except Exception:
+            pass
+
+    db.session.commit()
+
+    log_payment_transaction(
+        user_id=booking.user_id,
+        booking_type=booking_type,
+        booking_id=booking.id,
+        booking_ref=booking.booking_reference,
+        amount=booking.total_amount,
+        payment_method=booking.payment_method or 'card',
+        status='completed',
+        source_id=booking.payment_reference,
+        completed_by=completed_by
+    )
+
+    try:
+        send_booking_confirmation_email(booking.user, booking_type, booking)
+    except Exception as e:
+        print(f"[Payment] Failed to send confirmation email: {str(e)}")
+
+    return True
+
+
 # ==================== PayMongo Helper Functions ====================
+
+def pm_retrieve_checkout_session(checkout_session_id):
+    """Retrieve a PayMongo Checkout Session."""
+    try:
+        resp = requests.get(
+            f"https://api.paymongo.com/v1/checkout_sessions/{checkout_session_id}",
+            headers=paymongo_headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
 
 def pm_create_payment_intent(amount_cents, currency='PHP', metadata=None, description=None):
     """Create a PayMongo Payment Intent"""
@@ -196,20 +429,6 @@ def pm_update_payment_method(method_id, metadata=None):
         if metadata:
             payload["data"]["attributes"]["metadata"] = metadata
         resp = requests.post(f'https://api.paymongo.com/v1/payment_methods/{method_id}', json=payload, headers=paymongo_headers(), timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-def pm_create_source(amount_cents, type_name, currency='PHP', redirect_urls=None, metadata=None):
-    """Create a PayMongo Source (for e-wallet, bank_transfer, etc.)"""
-    try:
-        payload = {"data": {"attributes": {"amount": amount_cents, "currency": currency, "type": type_name}}}
-        if redirect_urls:
-            payload["data"]["attributes"]["redirect"] = redirect_urls
-        if metadata:
-            payload["data"]["attributes"]["metadata"] = metadata
-        resp = requests.post('https://api.paymongo.com/v1/sources', json=payload, headers=paymongo_headers(), timeout=15)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -1153,10 +1372,11 @@ def book_bus(route_id):
 @app.route('/payment/<booking_type>/<int:booking_id>')
 @login_required
 def payment(booking_type, booking_id):
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
+    booking_type = (booking_type or '').strip().lower()
+    if booking_type not in ('movie', 'bus'):
+        flash('Invalid booking type.', 'error')
+        return redirect(url_for('index'))
+    booking = get_booking_for_request(booking_type, booking_id)
     
     if booking.user_id != current_user.id:
         flash('Unauthorized access.', 'error')
@@ -1167,70 +1387,105 @@ def payment(booking_type, booking_id):
                          booking_type=booking_type)
 
 
+@app.route('/create-checkout-session', methods=['POST'])
 @app.route('/create-payment-intent', methods=['POST'])
 @login_required
 def create_payment_intent():
-    data = request.get_json()
-    booking_type = data.get('booking_type')
+    data = request.get_json(silent=True) or {}
+    booking_type = str(data.get('booking_type') or '').strip().lower()
     booking_id = data.get('booking_id')
-    payment_method = data.get('payment_method', 'card')  # Accept payment method; default to card
+    requested_method = data.get('payment_method', 'card')
+    pm_type = normalize_checkout_payment_method(requested_method)
 
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
+    if booking_type not in ('movie', 'bus'):
+        return jsonify({'error': "Invalid booking_type. Expected 'movie' or 'bus'."}), 400
 
-    # Create a PayMongo "source" (redirect) so we can send the user to PayMongo's hosted flow.
     try:
-        amount = int(booking.total_amount * 100)  # PayMongo expects amount in centavos
+        booking_id = int(booking_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid booking_id'}), 400
+
+    if pm_type not in CHECKOUT_SUPPORTED_METHODS:
+        return jsonify({
+            'error': f"Unsupported payment method '{requested_method}' for PayMongo Checkout.",
+            'supported_payment_methods': sorted(list(CHECKOUT_SUPPORTED_METHODS)),
+        }), 400
+
+    booking = get_booking_for_request(booking_type, booking_id)
+
+    if booking.user_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    try:
+        amount = int(round(float(booking.total_amount or 0) * 100))
+        if amount <= 0:
+            return jsonify({'error': 'Invalid booking amount'}), 400
 
         success_url = url_for('payment_success_page', booking_type=booking_type, booking_id=booking.id, _external=True)
-        failed_url = success_url  # fallback to same page; webhook will update status
+        cancel_url = f"{success_url}?checkout_status=cancelled"
 
-        payload = {
-            "data": {
-                "attributes": {
-                    "amount": amount,
-                    "currency": "PHP",
-                    "type": payment_method,
-                    "redirect": {
-                        "success": success_url,
-                        "failed": failed_url
-                    },
-                    "metadata": {
-                        "booking_type": booking_type,
-                        "booking_id": str(booking_id),
-                        "booking_reference": booking.booking_reference
-                    }
-                }
-            }
-        }
+        payload = build_checkout_session_payload(
+            amount_cents=amount,
+            booking_reference=booking.booking_reference,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            payment_method_types=[pm_type],
+            metadata={
+                "booking_type": booking_type,
+                "booking_id": str(booking.id),
+                "booking_reference": booking.booking_reference,
+                "selected_payment_method": pm_type,
+                "requested_payment_method": str(requested_method or '').strip().lower(),
+            },
+            description=f"TicketHub {booking_type.title()} Booking {booking.booking_reference}",
+            customer_email=getattr(current_user, 'email', None),
+        )
 
-        resp = requests.post('https://api.paymongo.com/v1/sources', json=payload, headers=paymongo_headers(), timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        headers = paymongo_headers()
+        if headers.get("Authorization") == "Basic MISSING_KEY":
+            return jsonify({'error': 'PAYMONGO_SECRET_KEY is missing'}), 500
 
-        # Try to extract a redirect/checkout URL from PayMongo response
-        checkout_url = None
-        source_id = None
+        resp = requests.post(
+            'https://api.paymongo.com/v1/checkout_sessions',
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
         try:
-            source_id = data['data']['id']
-            attrs = data['data'].get('attributes', {})
-            redirect_info = attrs.get('redirect', {})
-            checkout_url = redirect_info.get('checkout_url') or redirect_info.get('url') or redirect_info.get('redirect_url')
-        except Exception:
-            pass
+            resp_data = resp.json()
+        except ValueError:
+            return jsonify({
+                'error': f'PayMongo returned invalid response (status {resp.status_code})',
+                'details': resp.text[:200] if resp.text else 'Empty response'
+            }), 502
 
-        # Save tracking info on booking - DO NOT override if already set by /payment-ewallet-pending
-        if not booking.payment_method:
-            booking.payment_method = payment_method
-        booking.payment_reference = source_id or booking.payment_reference
+        if resp.status_code not in (200, 201):
+            error_msg, error_code, error_details = parse_paymongo_error(resp_data)
+            return jsonify({
+                'error': f'Failed to create PayMongo checkout session: {error_msg}',
+                'error_code': error_code,
+                'details': error_details,
+            }), resp.status_code
+
+        session_id = resp_data.get('data', {}).get('id')
+        attrs = resp_data.get('data', {}).get('attributes', {})
+        checkout_url = attrs.get('checkout_url') if isinstance(attrs, dict) else None
+
+        if not checkout_url or not session_id:
+            return jsonify({'error': 'PayMongo did not return a valid checkout session.'}), 502
+
+        booking.payment_method = pm_type
+        booking.payment_reference = session_id
         booking.payment_status = 'pending'
         db.session.commit()
 
-        return jsonify({'checkout_url': checkout_url, 'source_id': source_id})
+        return jsonify({
+            'checkout_url': checkout_url,
+            'checkout_session_id': session_id,
+            'payment_method': pm_type,
+        })
     except requests.RequestException as e:
-        return jsonify({'error': 'Failed to create PayMongo source', 'details': str(e)}), 400
+        return jsonify({'error': 'Failed to create PayMongo checkout session', 'details': str(e)}), 502
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -1240,14 +1495,14 @@ def create_payment_intent():
 def confirm_gcash_payment():
     """Confirm a GCash payment by checking PayMongo for a completed payment linked to the source or booking."""
     data = request.get_json() or {}
-    booking_type = data.get('booking_type')
+    booking_type = str(data.get('booking_type') or '').strip().lower()
     booking_id = data.get('booking_id')
     source_id = data.get('source_id')
 
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
+    if booking_type not in ('movie', 'bus'):
+        return jsonify({'success': False, 'error': "Invalid booking type"}), 400
+
+    booking = get_booking_for_request(booking_type, booking_id)
 
     if booking.user_id != current_user.id:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 403
@@ -1286,47 +1541,13 @@ def confirm_gcash_payment():
 
         # Consider these statuses as successful/completed
         if status and status.lower() in ('succeeded', 'paid', 'captured', 'completed'):
-            booking.payment_status = 'paid'
-            booking.payment_method = 'gcash'
-            # store paymongo payment id
-            booking.payment_reference = payment_id or booking.payment_reference
-
-            # decrement seats safely
-            if booking_type == 'movie':
-                try:
-                    showtime = booking.showtime
-                    if showtime and showtime.available_seats is not None:
-                        showtime.available_seats = max(0, showtime.available_seats - booking.num_tickets)
-                except Exception:
-                    pass
-            else:
-                try:
-                    schedule = booking.schedule
-                    if schedule and schedule.available_seats is not None:
-                        schedule.available_seats = max(0, schedule.available_seats - booking.num_tickets)
-                except Exception:
-                    pass
-
-            db.session.commit()
-
-            # Log transaction (record who completed the payment)
-            log_payment_transaction(
-                user_id=booking.user_id,
+            mark_booking_paid(
+                booking,
                 booking_type=booking_type,
-                booking_id=booking.id,
-                booking_ref=booking.booking_reference,
-                amount=booking.total_amount,
                 payment_method='gcash',
-                status='completed',
-                source_id=source_id,
+                payment_reference=payment_id or source_id or booking.payment_reference,
                 completed_by=current_user.id
             )
-
-            # Send booking confirmation email
-            try:
-                send_booking_confirmation_email(booking.user, booking_type, booking)
-            except Exception as e:
-                print(f"[GCash Confirm] Failed to send confirmation email: {str(e)}")
 
             return jsonify({'success': True, 'message': 'Payment confirmed'})
         else:
@@ -1345,7 +1566,6 @@ def payment_bank_pending():
     data = request.get_json()
     booking_type = data.get('booking_type')
     booking_id = data.get('booking_id')
-    payer_name = data.get('payer_name')
 
     if booking_type == 'movie':
         booking = MovieBooking.query.get_or_404(booking_id)
@@ -1549,53 +1769,48 @@ def payment_ewallet_pending():
 
     # Get booking
     try:
-        if booking_type == 'movie':
-            booking = MovieBooking.query.get_or_404(booking_id)
-        else:
-            booking = BusBooking.query.get_or_404(booking_id)
+        booking = get_booking_for_request(booking_type, booking_id)
     except Exception as e:
         return respond_error(f"Booking not found: {str(e)}", 404)
 
     if booking.user_id != current_user.id:
         return respond_error("Unauthorized access.", 403)
 
-    # Normalize payment method type
-    pm_type = payment_method.lower().strip()
+    # Normalize payment method to PayMongo Checkout Session types.
+    requested_pm_type = payment_method.lower().strip()
+    pm_type = normalize_checkout_payment_method(requested_pm_type)
 
-    # PayMongo valid source types
-    valid_types = ["gcash", "paymaya", "paypal", "card", "grab_pay", "ddoc"]
-    if pm_type not in valid_types:
-        return respond_error(f"Invalid payment method: {pm_type}. Valid types: {', '.join(valid_types)}", 400)
+    if pm_type not in CHECKOUT_SUPPORTED_METHODS:
+        valid_types = ", ".join(sorted(CHECKOUT_SUPPORTED_METHODS))
+        return respond_error(f"Invalid payment method: {requested_pm_type}. Valid types: {valid_types}", 400)
 
     try:
-        amount = int(booking.total_amount * 100)
+        amount = int(round(float(booking.total_amount or 0) * 100))
         if amount <= 0:
             return respond_error("Invalid booking amount", 400)
 
         success_url = url_for('payment_success_page', booking_type=booking_type, booking_id=booking.id, _external=True)
-        failed_url = success_url
+        cancel_url = f"{success_url}?checkout_status=cancelled"
 
-        payload = {
-            "data": {
-                "attributes": {
-                    "amount": amount,
-                    "currency": "PHP",
-                    "type": pm_type,
-                    "redirect": {
-                        "success": success_url,
-                        "failed": failed_url
-                    },
-                    "metadata": {
-                        "booking_type": booking_type,
-                        "booking_id": str(booking_id),
-                        "booking_reference": booking.booking_reference
-                    }
-                }
-            }
-        }
+        payload = build_checkout_session_payload(
+            amount_cents=amount,
+            booking_reference=booking.booking_reference,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            payment_method_types=[pm_type],
+            metadata={
+                "booking_type": booking_type,
+                "booking_id": str(booking.id),
+                "booking_reference": booking.booking_reference,
+                "selected_payment_method": pm_type,
+                "requested_payment_method": requested_pm_type,
+            },
+            description=f"TicketHub {booking_type.title()} Booking {booking.booking_reference}",
+            customer_email=getattr(current_user, 'email', None),
+        )
 
         print(f"\n[PayMongo] ========== REQUEST ==========")
-        print(f"[PayMongo] Endpoint: POST https://api.paymongo.com/v1/sources")
+        print(f"[PayMongo] Endpoint: POST https://api.paymongo.com/v1/checkout_sessions")
         print(f"[PayMongo] Payment Type: {pm_type}")
         print(f"[PayMongo] Amount: {amount} centavos (P{booking.total_amount})")
         print(f"[PayMongo] Booking: {booking_type} #{booking_id}")
@@ -1608,7 +1823,7 @@ def payment_ewallet_pending():
             return respond_error("PayMongo secret key is missing. Set PAYMONGO_SECRET_KEY in .env.", 500)
 
         resp = requests.post(
-            'https://api.paymongo.com/v1/sources',
+            'https://api.paymongo.com/v1/checkout_sessions',
             json=payload,
             headers=headers,
             timeout=15
@@ -1641,13 +1856,12 @@ def payment_ewallet_pending():
                 details=error_details if error_details else (resp.text[:200] if resp.text else None)
             )
 
-        source_id = resp_data.get('data', {}).get('id')
+        checkout_session_id = resp_data.get('data', {}).get('id')
         attrs = resp_data.get('data', {}).get('attributes', {})
-        redirect_info = attrs.get('redirect', {}) if isinstance(attrs, dict) else {}
-        checkout_url = redirect_info.get('checkout_url') or redirect_info.get('url') or redirect_info.get('redirect_url')
+        checkout_url = attrs.get('checkout_url') if isinstance(attrs, dict) else None
 
         print(f"[PayMongo] SUCCESS")
-        print(f"[PayMongo] Source ID: {source_id}")
+        print(f"[PayMongo] Checkout Session ID: {checkout_session_id}")
         print(f"[PayMongo] Checkout URL: {checkout_url}\n")
 
         if not checkout_url:
@@ -1656,7 +1870,7 @@ def payment_ewallet_pending():
         # Mark booking as pending and store reference
         booking.payment_status = 'pending'
         booking.payment_method = pm_type
-        booking.payment_reference = source_id
+        booking.payment_reference = checkout_session_id
 
         # Log the payment transaction
         log_payment_transaction(
@@ -1667,7 +1881,7 @@ def payment_ewallet_pending():
             amount=booking.total_amount,
             payment_method=pm_type,
             status='pending',
-            source_id=source_id
+            source_id=checkout_session_id
         )
         db.session.commit()
 
@@ -1679,7 +1893,7 @@ def payment_ewallet_pending():
             "checkout_url": checkout_url,
             "booking_id": booking.id,
             "booking_type": booking_type,
-            "source_id": source_id
+            "checkout_session_id": checkout_session_id
         })
     except requests.exceptions.Timeout:
         print(f"[PayMongo] TIMEOUT - Request took longer than 15 seconds\n")
@@ -1703,31 +1917,75 @@ def payment_ewallet_pending():
 @app.route('/payment-success/<booking_type>/<int:booking_id>')
 @login_required
 def payment_success_page(booking_type, booking_id):
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
+    booking_type = (booking_type or '').strip().lower()
+    if booking_type not in ('movie', 'bus'):
+        flash('Invalid booking type.', 'error')
+        return redirect(url_for('index'))
 
-    # Only mark as paid if not already marked by webhook
-    if booking.payment_status != 'paid':
-        booking.payment_status = 'paid'
-        db.session.commit()
-        
-        # Log the successful payment transaction
-        log_payment_transaction(
-            user_id=current_user.id,
+    booking = get_booking_for_request(booking_type, booking_id)
+
+    if booking.user_id != current_user.id and not current_user.is_admin:
+        flash('Unauthorized access.', 'error')
+        return redirect(url_for('index'))
+
+    checkout_status = str(request.args.get('checkout_status') or '').strip().lower()
+    if checkout_status in ('cancelled', 'failed'):
+        if str(booking.payment_status or '').lower() not in ('paid', 'completed'):
+            booking.payment_status = 'failed'
+            db.session.commit()
+        flash('Payment was not completed. You can retry checkout from your booking page.', 'warning')
+        return render_template("payment/payment_pending.html", booking=booking, booking_type=booking_type)
+
+    already_paid = str(booking.payment_status or '').strip().lower() in ('paid', 'completed')
+    if not already_paid:
+        query_session_id = (
+            request.args.get('checkout_session_id')
+            or request.args.get('session_id')
+            or request.args.get('id')
+        )
+        booking_ref = str(booking.payment_reference or '').strip()
+        checkout_session_id = query_session_id or (booking_ref if booking_ref.startswith('cs_') else None)
+
+        if not checkout_session_id:
+            flash('Payment is still pending confirmation. Please try again shortly.', 'info')
+            return render_template("payment/payment_pending.html", booking=booking, booking_type=booking_type)
+
+        checkout_data = pm_retrieve_checkout_session(checkout_session_id)
+        if checkout_data.get('error'):
+            print(f"[PayMongo] Checkout verification failed for {checkout_session_id}: {checkout_data.get('error')}")
+            flash('Payment verification is still in progress. Please try again in a moment.', 'info')
+            return render_template("payment/payment_pending.html", booking=booking, booking_type=booking_type)
+
+        attrs = (checkout_data.get('data') or {}).get('attributes') if isinstance(checkout_data.get('data'), dict) else {}
+        metadata = attrs.get('metadata') if isinstance(attrs, dict) else {}
+        if isinstance(metadata, dict):
+            meta_type = str(metadata.get('booking_type') or '').strip().lower()
+            meta_id = str(metadata.get('booking_id') or '').strip()
+            if (meta_type and meta_type != booking_type) or (meta_id and meta_id != str(booking.id)):
+                flash('Payment verification mismatch. Please contact support.', 'error')
+                return render_template("payment/payment_pending.html", booking=booking, booking_type=booking_type)
+
+        if not checkout_session_is_paid(checkout_data):
+            flash('Payment is still pending confirmation. Please try again shortly.', 'info')
+            return render_template("payment/payment_pending.html", booking=booking, booking_type=booking_type)
+
+        confirmed_payment_ref = checkout_session_id
+        if isinstance(attrs, dict):
+            payments = attrs.get('payments')
+            if isinstance(payments, list) and payments:
+                first_payment = payments[0]
+                if isinstance(first_payment, str) and first_payment.strip():
+                    confirmed_payment_ref = first_payment.strip()
+                elif isinstance(first_payment, dict):
+                    confirmed_payment_ref = first_payment.get('id') or confirmed_payment_ref
+
+        mark_booking_paid(
+            booking,
             booking_type=booking_type,
-            booking_id=booking_id,
-            booking_ref=booking.booking_reference,
-            amount=booking.total_amount,
             payment_method=booking.payment_method or 'card',
-            status='completed',
-            source_id=booking.payment_reference,
+            payment_reference=confirmed_payment_ref,
             completed_by=current_user.id
         )
-        
-        # Send booking confirmation email
-        send_booking_confirmation_email(current_user, booking_type, booking)
 
     return render_template(
         "payment/success.html",
@@ -1740,141 +1998,76 @@ def payment_success_page(booking_type, booking_id):
 # ----------------------
 @app.route('/webhook/paymongo', methods=['POST'])
 def paymongo_webhook():
-    payload = request.get_json() or {}
+    payload = request.get_json(silent=True) or {}
 
-    # Try to extract event type and resource id / metadata in a tolerant way
-    event_type = None
-    source_id = None
+    event_type = ''
     metadata = {}
+    resource_id = None
+    paid_payment_id = None
 
     try:
-        data = payload.get('data', {})
-        # event type
-        attributes = data.get('attributes') if isinstance(data, dict) else None
-        if attributes and isinstance(attributes, dict):
-            event_type = attributes.get('type')
+        data = payload.get('data') if isinstance(payload, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        event_attributes = data.get('attributes') if isinstance(data.get('attributes'), dict) else {}
+        event_type = str(event_attributes.get('type') or '').strip().lower()
 
-            # Try nested data -> attributes -> metadata
-            nested = attributes.get('data') or {}
-            if isinstance(nested, dict):
-                nested_attrs = nested.get('attributes') or {}
-                metadata = nested_attrs.get('metadata') or nested.get('metadata') or metadata
-                source_id = nested.get('id') or nested_attrs.get('id') or source_id
+        resource = event_attributes.get('data') if isinstance(event_attributes.get('data'), dict) else {}
+        resource_attributes = resource.get('attributes') if isinstance(resource.get('attributes'), dict) else {}
 
-        # Fallbacks
-        if not source_id:
-            source_id = data.get('id') or payload.get('id')
-        if not metadata:
-            # try attributes.metadata location
-            if attributes:
-                metadata = attributes.get('metadata') or {}
+        metadata = resource_attributes.get('metadata') or event_attributes.get('metadata') or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        resource_id = resource.get('id') or data.get('id') or payload.get('id')
+
+        payments = resource_attributes.get('payments')
+        if isinstance(payments, list) and payments:
+            first_payment = payments[0]
+            if isinstance(first_payment, str) and first_payment.strip():
+                paid_payment_id = first_payment.strip()
+            elif isinstance(first_payment, dict):
+                paid_payment_id = first_payment.get('id')
     except Exception:
         pass
 
-    # Attempt to find booking using metadata booking_id or booking_reference or by stored source id
-    booking = None
-    try:
-        if metadata and metadata.get('booking_id'):
-            bid = int(metadata.get('booking_id'))
-            booking = MovieBooking.query.get(bid) or BusBooking.query.get(bid)
-
-        if not booking and metadata and metadata.get('booking_reference'):
-            booking = MovieBooking.query.filter_by(booking_reference=metadata.get('booking_reference')).first() \
-                      or BusBooking.query.filter_by(booking_reference=metadata.get('booking_reference')).first()
-
-        if not booking and source_id:
-            booking = MovieBooking.query.filter_by(payment_reference=source_id).first() \
-                      or BusBooking.query.filter_by(payment_reference=source_id).first() 
-    except Exception:
-        booking = None
-
+    booking, booking_type = find_booking_from_metadata(metadata=metadata, payment_reference=resource_id)
     if not booking:
-        return jsonify({"error": "booking not found"}), 404
+        return jsonify({"success": True, "ignored": "booking_not_found"}), 200
 
-    # Only transition to paid once and decrement seats once
-    if event_type and ("paid" in event_type or "succeeded" in event_type or "source.chargeable" in event_type or "source.succeeded" in event_type or "source.completed" in event_type):
-        if booking.payment_status != 'paid':
-            booking.payment_status = 'paid'
-            # Preserve payment method that was set in /payment-ewallet-pending
-            # Only set to 'ewallet' if truly unknown
-            if not booking.payment_method or booking.payment_method == 'pending':
-                booking.payment_method = 'ewallet'
-            # decrement seats safely
-            if isinstance(booking, MovieBooking):
-                try:
-                    showtime = booking.showtime
-                    if showtime and showtime.available_seats is not None:
-                        showtime.available_seats = max(0, showtime.available_seats - booking.num_tickets)
-                except Exception:
-                    pass
-            else:
-                try:
-                    schedule = booking.schedule
-                    if schedule and schedule.available_seats is not None:
-                        schedule.available_seats = max(0, schedule.available_seats - booking.num_tickets)
-                except Exception:
-                    pass
+    booking_type = booking_type or infer_booking_type(booking) or 'movie'
+    selected_method = normalize_checkout_payment_method(
+        (metadata.get('selected_payment_method') or metadata.get('requested_payment_method') or booking.payment_method or 'card')
+    ) or (booking.payment_method or 'card')
 
-            db.session.commit()
-            
-            # Log successful payment transaction
-            booking_type = 'movie' if isinstance(booking, MovieBooking) else 'bus'
-            log_payment_transaction(
-                user_id=booking.user_id,
-                booking_type=booking_type,
-                booking_id=booking.id,
-                booking_ref=booking.booking_reference,
-                amount=booking.total_amount,
-                payment_method=booking.payment_method or 'card',
-                status='completed',
-                source_id=source_id
-            )
-            
-            # Send booking confirmation email
-            booking_type = 'movie' if isinstance(booking, MovieBooking) else 'bus'
-            try:
-                send_booking_confirmation_email(booking.user, booking_type, booking)
-            except Exception as e:
-                print(f"[Webhook] Failed to send confirmation email: {str(e)}")
+    if event_type and ("paid" in event_type or "succeeded" in event_type):
+        mark_booking_paid(
+            booking,
+            booking_type=booking_type,
+            payment_method=selected_method,
+            payment_reference=paid_payment_id or resource_id,
+            completed_by=None
+        )
     elif event_type and ("failed" in event_type or "cancelled" in event_type):
-        # If payment failed or was cancelled, remove any pending booking so it's not persisted
-        booking_type = 'movie' if isinstance(booking, MovieBooking) else 'bus'
-        try:
-            # Log failed payment transaction first
-            log_payment_transaction(
-                user_id=booking.user_id,
-                booking_type=booking_type,
-                booking_id=booking.id,
-                booking_ref=booking.booking_reference,
-                amount=booking.total_amount,
-                payment_method=booking.payment_method or 'card',
-                status='failed',
-                source_id=source_id
-            )
+        if str(booking.payment_status or '').strip().lower() not in ('paid', 'completed'):
+            booking.payment_status = 'failed'
+            if resource_id:
+                booking.payment_reference = resource_id
+            db.session.commit()
 
-            # Only delete if booking is not already paid
-            if booking.payment_status != 'paid':
-                db.session.delete(booking)
-                db.session.commit()
-        except Exception:
-            # Fallback: mark as failed if deletion not possible
-            try:
-                booking.payment_status = 'failed'
-                db.session.commit()
-            except Exception:
-                pass
-
-    return jsonify({"success": True})
+    return jsonify({"success": True}), 200
 
 @app.route('/check-ewallet-payment/<booking_type>/<int:booking_id>')
 @login_required
 def check_ewallet_payment(booking_type, booking_id):
-    if booking_type == 'movie':
-        booking = MovieBooking.query.get_or_404(booking_id)
-    else:
-        booking = BusBooking.query.get_or_404(booking_id)
+    booking_type = (booking_type or '').strip().lower()
+    if booking_type not in ('movie', 'bus'):
+        return jsonify({'error': 'Invalid booking type'}), 400
 
-    return jsonify({"paid": booking.payment_status == "paid"})
+    booking = get_booking_for_request(booking_type, booking_id)
+    if booking.user_id != current_user.id and not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    return jsonify({"paid": str(booking.payment_status or '').strip().lower() in ('paid', 'completed')})
 
 
 # ==================== ROUTES - PayMongo API Endpoints ====================
