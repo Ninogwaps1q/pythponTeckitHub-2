@@ -3,7 +3,7 @@
 Run script for the Movie + Bus Ticketing Application
 """
 import os
-from app import app, db, User
+from app import app, db, User, ensure_booking_verification_columns
 from werkzeug.security import generate_password_hash
 
 def create_admin():
@@ -29,6 +29,7 @@ def init_db():
     """Initialize the database"""
     with app.app_context():
         db.create_all()
+        ensure_booking_verification_columns()
         print("Database tables created successfully!")
 
 if __name__ == '__main__':

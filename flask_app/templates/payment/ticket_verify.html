@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+
+{% block title %}Ticket Verification - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-5" style="background:#f8f9fa;">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-lg-7">
+                <div class="card shadow-sm">
+                    <div class="card-body p-4 p-md-5">
+                        <div class="text-center mb-4">
+                            {% if ticket_valid %}
+                                <div class="d-inline-flex align-items-center justify-content-center rounded-circle mb-3"
+                                     style="width:88px;height:88px;background:rgba(34,197,94,.12);">
+                                    <i class="bi bi-check-lg text-success" style="font-size:2.5rem;"></i>
+                                </div>
+                                <h2 class="fw-bold mb-1">Valid Ticket</h2>
+                                {% if just_verified %}
+                                    <p class="text-muted mb-0">Booking verified successfully and marked as scanned.</p>
+                                {% else %}
+                                    <p class="text-muted mb-0">Booking is already verified/scanned.</p>
+                                {% endif %}
+                            {% else %}
+                                <div class="d-inline-flex align-items-center justify-content-center rounded-circle mb-3"
+                                     style="width:88px;height:88px;background:rgba(229,9,20,.12);">
+                                    <i class="bi bi-x-lg text-danger" style="font-size:2.2rem;"></i>
+                                </div>
+                                <h2 class="fw-bold mb-1">Invalid Ticket</h2>
+                                <p class="text-muted mb-0">{{ error_message or 'This QR code could not be verified.' }}</p>
+                            {% endif %}
+                        </div>
+
+                        <div class="bg-light rounded-3 p-4">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Scanned At</span>
+                                <span class="fw-semibold">{{ scanned_at.strftime('%b %d, %Y %I:%M %p') if scanned_at else '-' }}</span>
+                            </div>
+
+                            {% if booking %}
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Booking Reference</span>
+                                    <span class="fw-bold">{{ booking.booking_reference }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Type</span>
+                                    <span class="text-uppercase">{{ booking_type }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Status</span>
+                                    {% if ticket_valid %}
+                                        <span class="badge bg-success">{{ booking.payment_status|upper }}</span>
+                                    {% else %}
+                                        <span class="badge bg-danger">{{ booking.payment_status|upper }}</span>
+                                    {% endif %}
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Verified</span>
+                                    {% if booking.is_verified %}
+                                        <span class="badge bg-success">YES</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">NO</span>
+                                    {% endif %}
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Verified At</span>
+                                    <span>{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '-' }}</span>
+                                </div>
+
+                                {% if booking_type == 'movie' %}
+                                    <hr>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Movie</span>
+                                        <span class="fw-semibold">{{ booking.showtime.movie.title }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Cinema</span>
+                                        <span>{{ booking.showtime.cinema.name }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Showtime</span>
+                                        <span>{{ booking.showtime.show_date.strftime('%b %d, %Y') }} {{ booking.showtime.show_time.strftime('%I:%M %p') }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Tickets</span>
+                                        <span>{{ booking.num_tickets }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Seats</span>
+                                        <span>{{ booking.seat_numbers|movie_seat_list if booking.seat_numbers else 'To be assigned' }}</span>
+                                    </div>
+                                {% elif booking_type == 'bus' %}
+                                    <hr>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Route</span>
+                                        <span class="fw-semibold">{{ booking.schedule.route.origin }} - {{ booking.schedule.route.destination }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Travel Date</span>
+                                        <span>{{ booking.schedule.travel_date.strftime('%b %d, %Y') }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Departure</span>
+                                        <span>{{ booking.schedule.route.departure_time.strftime('%I:%M %p') }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Passengers</span>
+                                        <span>{{ booking.num_tickets }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <span class="text-muted">Seats</span>
+                                        <span>{{ booking.seat_numbers or 'To be assigned' }}</span>
+                                    </div>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+
+                        <div class="text-center mt-4">
+                            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">
+                                <i class="bi bi-house me-2"></i>Back to Home
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

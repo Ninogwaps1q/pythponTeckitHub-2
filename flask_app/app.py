@@ -3,19 +3,25 @@ Movie + Bus Ticketing Platform
 Flask Application with SQLAlchemy, PayMongo Payments (Card, GCash, PayMaya, PayPal), and Admin Panel
 """
 
-import os, base64
+import os, base64, io, html
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from flask_mail import Mail, Message
+from sqlalchemy import text
+
+try:
+    import qrcode
+except Exception:
+    qrcode = None
 
 # Load environment variables from .env file.
 # override=True ensures local project .env is used even if stale shell env vars exist.
@@ -623,6 +629,8 @@ class MovieBooking(db.Model):
     payment_reference = db.Column(db.String(255)) # PayMongo source/payment id
 
     booking_reference = db.Column(db.String(20), unique=True)
+    is_verified = db.Column(db.Boolean, default=False, nullable=False)
+    verified_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -666,6 +674,8 @@ class BusBooking(db.Model):
     payment_reference = db.Column(db.String(255)) # PayMongo source/payment id
 
     booking_reference = db.Column(db.String(20), unique=True)
+    is_verified = db.Column(db.Boolean, default=False, nullable=False)
+    verified_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -731,104 +741,299 @@ def log_payment_transaction(user_id, booking_type, booking_id, booking_ref, amou
 
 # ==================== EMAIL FUNCTIONS ====================
 
-def send_booking_confirmation_email(user, booking_type, booking):
-    """Send booking confirmation email to user"""
+def is_booking_paid(booking):
+    """Return True if booking has a completed payment status."""
+    return str(getattr(booking, 'payment_status', '') or '').strip().lower() in ('paid', 'completed')
+
+
+def generate_ticket_scan_token(booking_type, booking):
+    """Create a signed token used by ticket QR scanning."""
+    payload = {
+        'booking_type': str(booking_type or '').strip().lower(),
+        'booking_id': int(getattr(booking, 'id', 0) or 0),
+        'booking_reference': str(getattr(booking, 'booking_reference', '') or '').strip(),
+    }
+    return serializer.dumps(payload, salt='ticket-qr-salt')
+
+
+def build_ticket_scan_url(booking_type, booking, external=True):
+    """Build scan URL containing a signed token for verification."""
+    token = generate_ticket_scan_token(booking_type, booking)
     try:
-        if booking_type == 'movie':
-            subject = f"🎬 Movie Booking Confirmed - {booking.booking_reference}"
+        return url_for('scan_ticket_qr', token=token, _external=external)
+    except Exception:
+        # Fallback when no request context/base URL is available.
+        return f"/ticket/scan/{token}"
+
+
+def generate_qr_png_bytes(payload_text):
+    """Generate QR PNG bytes for text/url payload."""
+    if not payload_text or not qrcode:
+        return None
+    try:
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=2
+        )
+        qr.add_data(str(payload_text))
+        qr.make(fit=True)
+        image = qr.make_image(fill_color='black', back_color='white')
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception as e:
+        print(f"[QR] Failed to generate QR image: {str(e)}")
+        return None
+
+
+def build_qr_data_uri(png_bytes):
+    """Convert PNG bytes to data URI for inline HTML rendering."""
+    if not png_bytes:
+        return None
+    return "data:image/png;base64," + base64.b64encode(png_bytes).decode('ascii')
+
+
+def build_ticket_qr_payload(booking_type, booking):
+    """Human-readable QR payload with booking details only (no URL)."""
+    bt = str(booking_type or '').strip().lower()
+    lines = [
+        "TicketHub eTicket",
+        f"Reference: {getattr(booking, 'booking_reference', '')}",
+        f"Type: {bt.upper()}",
+        f"Status: {str(getattr(booking, 'payment_status', '') or '').upper() or 'PENDING'}",
+    ]
+
+    try:
+        if bt == 'movie':
             showtime = booking.showtime
             movie = showtime.movie
             cinema = showtime.cinema
-            
-            body = f"""
-Hello {user.name},
-
-Your movie booking has been confirmed successfully!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📽️ MOVIE BOOKING CONFIRMATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Booking Reference: {booking.booking_reference}
-Movie: {movie.title}
-Cinema: {cinema.name}
-Date: {showtime.show_date.strftime('%B %d, %Y')}
-Time: {showtime.show_time.strftime('%I:%M %p')}
-Number of Tickets: {booking.num_tickets}
-Seat Numbers: {booking.seat_numbers if booking.seat_numbers else 'To be assigned'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💳 PAYMENT DETAILS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Amount Paid: ₱{booking.total_amount:.2f}
-Payment Method: {booking.payment_method.upper()}
-Status: PAID ✓
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Please arrive 15 minutes before the show time. Have your booking reference ready at the ticket counter.
-
-For cancellations or inquiries, please contact us within 24 hours.
-
-Best regards,
-TicketHub Team
-"""
-        else:  # bus booking
-            subject = f"🚌 Bus Booking Confirmed - {booking.booking_reference}"
+            seat_display = movie_seat_list_to_display(booking.seat_numbers) if booking.seat_numbers else 'To be assigned'
+            lines.extend([
+                f"Movie: {movie.title}",
+                f"Cinema: {cinema.name}",
+                f"Date: {showtime.show_date.strftime('%Y-%m-%d')}",
+                f"Time: {showtime.show_time.strftime('%I:%M %p')}",
+                f"Tickets: {booking.num_tickets}",
+                f"Seats: {seat_display}",
+            ])
+        elif bt == 'bus':
             schedule = booking.schedule
             route = schedule.route
-            
-            body = f"""
-Hello {user.name},
+            lines.extend([
+                f"Route: {route.origin} -> {route.destination}",
+                f"Travel Date: {schedule.travel_date.strftime('%Y-%m-%d')}",
+                f"Departure: {route.departure_time.strftime('%I:%M %p')}",
+                f"Passengers: {booking.num_tickets}",
+                f"Seats: {booking.seat_numbers or 'To be assigned'}",
+            ])
+    except Exception:
+        # Keep payload generation resilient.
+        pass
 
-Your bus booking has been confirmed successfully!
+    return "\n".join(lines)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚌 BUS BOOKING CONFIRMATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Booking Reference: {booking.booking_reference}
-Route: {route.origin} → {route.destination}
-Bus Operator: {route.bus_operator}
-Bus Type: {route.bus_type}
-Travel Date: {schedule.travel_date.strftime('%B %d, %Y')}
-Departure Time: {route.departure_time.strftime('%I:%M %p')}
-Arrival Time: {route.arrival_time.strftime('%I:%M %p')}
-Number of Passengers: {booking.num_tickets}
-Seat Numbers: {booking.seat_numbers if booking.seat_numbers else 'To be assigned'}
+def get_qr_ticket_context(booking_type, booking):
+    """Return scan URL and QR representations for templates/emails."""
+    scan_url = build_ticket_scan_url(booking_type, booking, external=True)
+    qr_payload = scan_url
+    qr_png_bytes = generate_qr_png_bytes(qr_payload)
+    return {
+        'scan_url': scan_url,
+        'qr_payload': qr_payload,
+        'qr_png_bytes': qr_png_bytes,
+        'qr_data_uri': build_qr_data_uri(qr_png_bytes),
+    }
 
-Amenities: {route.amenities if route.amenities else 'Standard amenities'}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💳 PAYMENT DETAILS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def send_booking_confirmation_email(user, booking_type, booking):
+    """Send booking confirmation email to user with QR ticket."""
+    try:
+        booking_type = str(booking_type or '').strip().lower()
+        qr_ctx = get_qr_ticket_context(booking_type, booking)
+        ticket_scan_url = qr_ctx.get('scan_url')
+        qr_png_bytes = qr_ctx.get('qr_png_bytes')
 
-Amount Paid: ₱{booking.total_amount:.2f}
-Payment Method: {booking.payment_method.upper()}
-Status: PAID ✓
+        payment_method = str(getattr(booking, 'payment_method', '') or 'ONLINE').upper()
+        payment_status = str(getattr(booking, 'payment_status', '') or '').upper() or 'PAID'
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if booking_type == 'movie':
+            showtime = booking.showtime
+            movie = showtime.movie
+            cinema = showtime.cinema
+            seat_display = movie_seat_list_to_display(booking.seat_numbers) if booking.seat_numbers else 'To be assigned'
+            subject = f"Movie Booking Confirmed - {booking.booking_reference}"
+            detail_rows = [
+                ("Booking Reference", booking.booking_reference),
+                ("Movie", movie.title),
+                ("Cinema", cinema.name),
+                ("Date", showtime.show_date.strftime('%B %d, %Y')),
+                ("Time", showtime.show_time.strftime('%I:%M %p')),
+                ("Tickets", str(booking.num_tickets)),
+                ("Seats", seat_display),
+                ("Amount Paid", f"PHP {booking.total_amount:.2f}"),
+                ("Payment Method", payment_method),
+                ("Status", payment_status),
+            ]
+            travel_note = "Please arrive 15 minutes before showtime and present your QR code or booking reference."
+        else:
+            schedule = booking.schedule
+            route = schedule.route
+            subject = f"Bus Booking Confirmed - {booking.booking_reference}"
+            detail_rows = [
+                ("Booking Reference", booking.booking_reference),
+                ("Route", f"{route.origin} -> {route.destination}"),
+                ("Bus Operator", route.bus_operator or "N/A"),
+                ("Bus Type", route.bus_type or "Standard"),
+                ("Travel Date", schedule.travel_date.strftime('%B %d, %Y')),
+                ("Departure", route.departure_time.strftime('%I:%M %p')),
+                ("Arrival", route.arrival_time.strftime('%I:%M %p')),
+                ("Passengers", str(booking.num_tickets)),
+                ("Seats", booking.seat_numbers or "To be assigned"),
+                ("Amount Paid", f"PHP {booking.total_amount:.2f}"),
+                ("Payment Method", payment_method),
+                ("Status", payment_status),
+            ]
+            travel_note = "Please arrive 30 minutes before departure and present your QR code or booking reference."
 
-Please arrive at the boarding point 30 minutes before the departure time. Keep your booking reference and ID handy.
+        detail_lines_text = "\n".join(f"{k}: {v}" for k, v in detail_rows)
+        detail_rows_html = "".join(
+            f"<tr><td style='padding:6px 0;color:#6b7280;'>{html.escape(str(k))}</td>"
+            f"<td style='padding:6px 0;font-weight:600;text-align:right;'>{html.escape(str(v))}</td></tr>"
+            for k, v in detail_rows
+        )
+        qr_instruction_text = (
+            "Scan the QR code attached in this email to verify your booking at check-in."
+            if qr_png_bytes else
+            "Use the verification link below to verify your booking at check-in."
+        )
 
-For cancellations or inquiries, please contact us within 24 hours.
+        body_text = (
+            f"Hello {user.name},\n\n"
+            "Your booking is confirmed.\n\n"
+            f"{detail_lines_text}\n\n"
+            f"{qr_instruction_text}\n"
+            f"Ticket verification link: {ticket_scan_url}\n\n"
+            f"{travel_note}\n\n"
+            "TicketHub Team"
+        )
 
-Best regards,
-TicketHub Team
-"""
+        qr_section_html = (
+            "<p style='margin:16px 0 8px;'>A QR code image is attached to this email for check-in scanning.</p>"
+            if qr_png_bytes else
+            "<p style='margin:16px 0 8px;'>QR generation is unavailable right now. Use the verification link below.</p>"
+        )
 
-        # Send email
+        body_html = (
+            f"<div style='font-family:Arial, sans-serif; max-width:560px;'>"
+            f"<h2 style='margin:0 0 10px;'>Booking Confirmed</h2>"
+            f"<p style='margin:0 0 16px;'>Hello {html.escape(str(user.name))}, your booking is confirmed.</p>"
+            f"<table style='width:100%;border-collapse:collapse;'>{detail_rows_html}</table>"
+            f"<hr style='margin:18px 0;border:none;border-top:1px solid #e5e7eb;'>"
+            f"{qr_section_html}"
+            f"<p style='margin:12px 0 6px;'>Verification link:</p>"
+            f"<p style='margin:0 0 16px;word-break:break-all;'><a href='{html.escape(str(ticket_scan_url))}'>{html.escape(str(ticket_scan_url))}</a></p>"
+            f"<p style='margin:0 0 16px;color:#4b5563;'>{html.escape(travel_note)}</p>"
+            f"<p style='margin:0;color:#6b7280;'>TicketHub Team</p>"
+            f"</div>"
+        )
+
         msg = Message(
             subject=subject,
             recipients=[user.email],
-            body=body
+            body=body_text,
+            html=body_html
         )
+
+        if qr_png_bytes:
+            # Attach QR PNG so user can scan from email.
+            msg.attach(
+                filename=f"{booking.booking_reference}_qr.png",
+                content_type='image/png',
+                data=qr_png_bytes,
+                disposition='attachment'
+            )
+
         mail.send(msg)
-        print(f"[Email] ✓ Booking confirmation sent to {user.email} (Ref: {booking.booking_reference})")
+        print(f"[Email] Booking confirmation sent to {user.email} (Ref: {booking.booking_reference})")
         return True
     except Exception as e:
-        print(f"[Email] ✗ Failed to send booking confirmation email: {str(e)}")
+        print(f"[Email] Failed to send booking confirmation email: {str(e)}")
+        return False
+
+
+def send_booking_verified_email(user, booking_type, booking, verified_at=None):
+    """Send a follow-up email when a ticket is scanned and marked verified."""
+    try:
+        booking_type = str(booking_type or '').strip().lower()
+        verified_at = verified_at or getattr(booking, 'verified_at', None) or datetime.now()
+
+        if booking_type == 'movie':
+            showtime = booking.showtime
+            seat_display = movie_seat_list_to_display(booking.seat_numbers) if booking.seat_numbers else 'To be assigned'
+            subject = f"Ticket Verified - {booking.booking_reference}"
+            detail_rows = [
+                ("Booking Reference", booking.booking_reference),
+                ("Type", "MOVIE"),
+                ("Movie", showtime.movie.title),
+                ("Cinema", showtime.cinema.name),
+                ("Showtime", f"{showtime.show_date.strftime('%b %d, %Y')} {showtime.show_time.strftime('%I:%M %p')}"),
+                ("Seats", seat_display),
+                ("Verified At", verified_at.strftime('%b %d, %Y %I:%M %p')),
+            ]
+        else:
+            schedule = booking.schedule
+            route = schedule.route
+            subject = f"Ticket Verified - {booking.booking_reference}"
+            detail_rows = [
+                ("Booking Reference", booking.booking_reference),
+                ("Type", "BUS"),
+                ("Route", f"{route.origin} -> {route.destination}"),
+                ("Travel Date", schedule.travel_date.strftime('%b %d, %Y')),
+                ("Departure", route.departure_time.strftime('%I:%M %p')),
+                ("Seats", booking.seat_numbers or "To be assigned"),
+                ("Verified At", verified_at.strftime('%b %d, %Y %I:%M %p')),
+            ]
+
+        detail_lines_text = "\n".join(f"{k}: {v}" for k, v in detail_rows)
+        detail_rows_html = "".join(
+            f"<tr><td style='padding:6px 0;color:#6b7280;'>{html.escape(str(k))}</td>"
+            f"<td style='padding:6px 0;font-weight:600;text-align:right;'>{html.escape(str(v))}</td></tr>"
+            for k, v in detail_rows
+        )
+
+        body_text = (
+            f"Hello {user.name},\n\n"
+            "Your ticket has been scanned and verified.\n\n"
+            f"{detail_lines_text}\n\n"
+            "If this was not you, please contact support immediately.\n\n"
+            "TicketHub Team"
+        )
+
+        body_html = (
+            f"<div style='font-family:Arial, sans-serif; max-width:560px;'>"
+            f"<h2 style='margin:0 0 10px;'>Ticket Verified</h2>"
+            f"<p style='margin:0 0 16px;'>Hello {html.escape(str(user.name))}, your ticket has been scanned and verified.</p>"
+            f"<table style='width:100%;border-collapse:collapse;'>{detail_rows_html}</table>"
+            f"<p style='margin:16px 0 0;color:#4b5563;'>If this was not you, please contact support immediately.</p>"
+            f"<p style='margin:8px 0 0;color:#6b7280;'>TicketHub Team</p>"
+            f"</div>"
+        )
+
+        msg = Message(
+            subject=subject,
+            recipients=[user.email],
+            body=body_text,
+            html=body_html
+        )
+        mail.send(msg)
+        print(f"[Email] Verification notice sent to {user.email} (Ref: {booking.booking_reference})")
+        return True
+    except Exception as e:
+        print(f"[Email] Failed to send verification notice: {str(e)}")
         return False
 
 
@@ -976,22 +1181,119 @@ def is_valid_showtime_seat_label(seat_label, total_seats, cols=10):
         return False
 
 
+def seat_row_to_letters(row_num):
+    """Convert 1-based row number to letters (1->A, 26->Z, 27->AA)."""
+    try:
+        n = int(row_num)
+    except Exception:
+        return ''
+    if n <= 0:
+        return ''
+    out = ''
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def movie_seat_label_to_display(seat_label):
+    """Convert internal movie seat code 'row-col' to user label like 'A1'."""
+    try:
+        parts = str(seat_label or '').strip().split('-')
+        if len(parts) != 2:
+            return str(seat_label or '').strip()
+        row = int(parts[0])
+        col = int(parts[1])
+        if row <= 0 or col <= 0:
+            return str(seat_label or '').strip()
+        row_letters = seat_row_to_letters(row)
+        if not row_letters:
+            return str(seat_label or '').strip()
+        return f'{row_letters}{col}'
+    except Exception:
+        return str(seat_label or '').strip()
+
+
+def movie_seat_list_to_display(seat_numbers):
+    """Convert comma-separated internal seat codes to display labels."""
+    seats = [s.strip() for s in str(seat_numbers or '').split(',') if s and s.strip()]
+    if not seats:
+        return ''
+    return ', '.join(movie_seat_label_to_display(s) for s in seats)
+
+
+@app.template_filter('movie_seat_label')
+def movie_seat_label_filter(value):
+    return movie_seat_label_to_display(value)
+
+
+@app.template_filter('movie_seat_list')
+def movie_seat_list_filter(value):
+    return movie_seat_list_to_display(value)
+
+
+def parse_travel_date(value, default_date=None):
+    """Parse YYYY-MM-DD travel date; fallback to default_date or today."""
+    try:
+        return datetime.strptime(str(value or ''), '%Y-%m-%d').date()
+    except Exception:
+        return default_date or datetime.now().date()
+
+
+def is_route_departed_for_date(route, travel_date, now_dt=None):
+    """True when route should be unavailable for booking on a given travel date.
+
+    Rules:
+    - Past travel dates are unavailable.
+    - Future travel dates are available.
+    - For today, route is unavailable only while bus is in transit
+      (departure <= now < arrival). After arrival, it becomes available again.
+    """
+    if not route or not getattr(route, 'departure_time', None) or not travel_date:
+        return False
+    now_dt = now_dt or datetime.now()
+    if travel_date < now_dt.date():
+        return True
+    if travel_date > now_dt.date():
+        return False
+    departure_dt = datetime.combine(travel_date, route.departure_time)
+
+    # If arrival_time is earlier than departure_time, treat it as next-day arrival.
+    arrival_time = getattr(route, 'arrival_time', None) or route.departure_time
+    arrival_dt = datetime.combine(travel_date, arrival_time)
+    if arrival_dt <= departure_dt:
+        arrival_dt = arrival_dt + timedelta(days=1)
+
+    return departure_dt <= now_dt < arrival_dt
+
+
+def is_showtime_departed(showtime, now_dt=None):
+    """True when movie showtime has already started/passed."""
+    if not showtime or not getattr(showtime, 'show_date', None) or not getattr(showtime, 'show_time', None):
+        return False
+    now_dt = now_dt or datetime.now()
+    show_dt = datetime.combine(showtime.show_date, showtime.show_time)
+    return show_dt <= now_dt
+
+
 # ==================== ROUTES - MAIN ====================
 
 @app.route('/')
 def index():
     movies = Movie.query.filter_by(is_active=True).order_by(Movie.release_date.desc()).limit(6).all()
-    routes = BusRoute.query.filter_by(is_active=True).limit(6).all()
+    today = datetime.now().date()
+    all_routes = BusRoute.query.filter_by(is_active=True).order_by(BusRoute.departure_time).all()
+    routes = [r for r in all_routes if not is_route_departed_for_date(r, today)][:6]
 
     # Build availability maps for movies (next upcoming showtime) and bus routes (next schedule)
-    from datetime import date
     availability_map = {}
     for m in movies:
         try:
-            next_show = Showtime.query.filter(
+            candidate_shows = Showtime.query.filter(
                 Showtime.movie_id == m.id,
                 Showtime.show_date >= datetime.now().date()
-            ).order_by(Showtime.show_date, Showtime.show_time).first()
+            ).order_by(Showtime.show_date, Showtime.show_time).all()
+            next_show = next((st for st in candidate_shows if not is_showtime_departed(st)), None)
             if not next_show:
                 continue
 
@@ -1160,6 +1462,7 @@ def movie_detail(movie_id):
         Showtime.movie_id == movie_id,
         Showtime.show_date >= datetime.now().date()
     ).order_by(Showtime.show_date, Showtime.show_time).all()
+    showtimes = [st for st in showtimes if not is_showtime_departed(st)]
     return render_template('movies/detail.html', movie=movie, showtimes=showtimes)
 
 
@@ -1167,6 +1470,10 @@ def movie_detail(movie_id):
 @login_required
 def book_movie(showtime_id):
     showtime = Showtime.query.get_or_404(showtime_id)
+
+    if is_showtime_departed(showtime):
+        flash('This showtime has already started or passed. Please choose another showtime.', 'error')
+        return redirect(url_for('movie_detail', movie_id=showtime.movie_id))
     
     if request.method == 'POST':
         # Compute real-time availability based on cinema capacity minus reserved bookings.
@@ -1203,13 +1510,16 @@ def book_movie(showtime_id):
         # Validate seat labels are within cinema capacity
         invalid = [s for s in selected if not is_valid_showtime_seat_label(s, total_seats, cols=10)]
         if invalid:
-            flash(f'Invalid seat selection: {", ".join(invalid)}.', 'error')
+            flash(f'Invalid seat selection: {", ".join(movie_seat_label_to_display(s) for s in invalid)}.', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
 
         # Check against already reserved seats (pending/paid/completed)
         conflicts = [s for s in selected if s in reserved_seats]
         if conflicts:
-            flash(f'The following seat(s) are no longer available: {", ".join(conflicts)}. Please choose different seats.', 'error')
+            flash(
+                f'The following seat(s) are no longer available: {", ".join(movie_seat_label_to_display(s) for s in conflicts)}. Please choose different seats.',
+                'error'
+            )
             return redirect(url_for('book_movie', showtime_id=showtime_id))
         
         total_amount = num_tickets * float(showtime.price or 0)
@@ -1238,8 +1548,11 @@ def book_movie(showtime_id):
 # ==================== ROUTES - BUS ====================
 
 @app.route('/bus')
+@app.route('/bus/list')
 def bus_routes():
-    routes = BusRoute.query.filter_by(is_active=True).all()
+    today = datetime.now().date()
+    routes = BusRoute.query.filter_by(is_active=True).order_by(BusRoute.departure_time).all()
+    routes = [r for r in routes if not is_route_departed_for_date(r, today)]
     return render_template('bus/list.html', routes=routes)
 
 
@@ -1248,19 +1561,20 @@ def search_bus():
     if request.method == 'POST':
         origin = request.form.get('origin')
         destination = request.form.get('destination')
-        travel_date = request.form.get('travel_date')
-        
+        selected_date = parse_travel_date(request.form.get('travel_date'))
+
         routes = BusRoute.query.filter(
             BusRoute.origin.ilike(f'%{origin}%'),
             BusRoute.destination.ilike(f'%{destination}%'),
             BusRoute.is_active == True
-        ).all()
-        
+        ).order_by(BusRoute.departure_time).all()
+        routes = [r for r in routes if not is_route_departed_for_date(r, selected_date)]
+
         return render_template('bus/search_results.html', 
                              routes=routes, 
                              origin=origin, 
                              destination=destination,
-                             travel_date=travel_date)
+                             travel_date=selected_date.isoformat())
     
     return render_template('bus/search.html')
 
@@ -1272,11 +1586,16 @@ def book_bus(route_id):
     travel_date = request.args.get('date', datetime.now().date().isoformat())
 
     # Get or create schedule for the date
-    try:
-        parsed_date = datetime.strptime(travel_date, '%Y-%m-%d').date()
-    except Exception:
-        parsed_date = datetime.now().date()
-        travel_date = parsed_date.isoformat()
+    parsed_date = parse_travel_date(travel_date)
+    travel_date = parsed_date.isoformat()
+
+    if is_route_departed_for_date(route, parsed_date):
+        if parsed_date < datetime.now().date():
+            flash('This travel date has already passed. Please choose today or a future date.', 'error')
+        else:
+            flash('This bus is currently in transit. It will be available again after arrival time.', 'error')
+        return redirect(url_for('search_bus'))
+
     schedule = BusSchedule.query.filter_by(
         route_id=route_id,
         travel_date=parsed_date
@@ -1990,7 +2309,62 @@ def payment_success_page(booking_type, booking_id):
     return render_template(
         "payment/success.html",
         booking=booking,
-        booking_type=booking_type
+        booking_type=booking_type,
+        qr_ticket=get_qr_ticket_context(booking_type, booking)
+    )
+
+
+@app.route('/ticket/scan/<token>')
+def scan_ticket_qr(token):
+    """Scan endpoint used by booking QR codes."""
+    error_message = None
+    booking = None
+    booking_type = None
+    ticket_valid = False
+    just_verified = False
+
+    try:
+        payload = serializer.loads(token, salt='ticket-qr-salt', max_age=60 * 60 * 24 * 365 * 10)
+        booking_type = str(payload.get('booking_type') or '').strip().lower()
+        booking_id = payload.get('booking_id')
+        booking_ref = str(payload.get('booking_reference') or '').strip()
+
+        if booking_type not in ('movie', 'bus'):
+            raise BadSignature('Invalid booking type in token.')
+
+        booking = get_booking_or_none(booking_type, booking_id)
+        if not booking:
+            error_message = 'Booking record was not found.'
+        elif str(getattr(booking, 'booking_reference', '') or '').strip() != booking_ref:
+            error_message = 'Booking reference mismatch.'
+        elif not is_booking_paid(booking):
+            error_message = 'Booking exists but payment is not completed.'
+        else:
+            ticket_valid = True
+            if hasattr(booking, 'is_verified') and not bool(booking.is_verified):
+                booking.is_verified = True
+                booking.verified_at = datetime.now()
+                db.session.commit()
+                just_verified = True
+                try:
+                    send_booking_verified_email(booking.user, booking_type, booking, verified_at=booking.verified_at)
+                except Exception as notify_err:
+                    print(f"[Email] Could not send verification follow-up email: {str(notify_err)}")
+    except SignatureExpired:
+        error_message = 'This ticket QR has expired.'
+    except BadSignature:
+        error_message = 'Invalid QR code signature.'
+    except Exception as e:
+        error_message = f'Unable to verify QR code: {str(e)}'
+
+    return render_template(
+        'payment/ticket_verify.html',
+        ticket_valid=ticket_valid,
+        booking=booking,
+        booking_type=booking_type,
+        error_message=error_message,
+        scanned_at=datetime.now(),
+        just_verified=just_verified
     )
 
 # ----------------------
@@ -2976,9 +3350,40 @@ def chatbot_page():
 
 # ==================== INITIALIZE DATABASE ====================
 
+def ensure_booking_verification_columns():
+    """Best-effort migration for QR verification columns on existing SQLite DBs."""
+    try:
+        movie_table = MovieBooking.__table__.name
+        bus_table = BusBooking.__table__.name
+        targets = {
+            movie_table: {
+                'is_verified': f"ALTER TABLE {movie_table} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
+                'verified_at': f"ALTER TABLE {movie_table} ADD COLUMN verified_at DATETIME"
+            },
+            bus_table: {
+                'is_verified': f"ALTER TABLE {bus_table} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
+                'verified_at': f"ALTER TABLE {bus_table} ADD COLUMN verified_at DATETIME"
+            }
+        }
+
+        for table_name, columns in targets.items():
+            existing = {
+                row[1] for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+            }
+            for col_name, alter_sql in columns.items():
+                if col_name not in existing:
+                    db.session.execute(text(alter_sql))
+                    print(f"[DB] Added column {table_name}.{col_name}")
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"[DB] Could not ensure booking verification columns: {str(e)}")
+
+
 def init_db():
     with app.app_context():
         db.create_all()
+        ensure_booking_verification_columns()
         
         # Create admin user if not exists
         admin = User.query.filter_by(email='admin@example.com').first()
@@ -3053,6 +3458,17 @@ def reset_password(token):
         return redirect(url_for('login'))
 
     return render_template('auth/reset_password.html', token=token)
+
+
+def bootstrap_db_schema():
+    """Ensure core tables/columns exist for import-based runs (e.g., flask run)."""
+    with app.app_context():
+        db.create_all()
+        ensure_booking_verification_columns()
+
+
+# Run lightweight schema bootstrap on import to avoid missing-column errors.
+bootstrap_db_schema()
 
 
 if __name__ == '__main__':

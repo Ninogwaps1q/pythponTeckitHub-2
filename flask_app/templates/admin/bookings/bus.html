@@ -24,6 +24,7 @@
                         <th class="py-3">Passengers</th>
                         <th class="py-3">Amount</th>
                         <th class="py-3">Payment Status</th>
+                        <th class="py-3">Verified</th>
                         <th class="py-3">Booking Date</th>
                     </tr>
                 </thead>
@@ -49,6 +50,14 @@
                                 {% else %}
                                     <span class="badge bg-danger">Failed</span>
                                 {% endif %}
+                        </td>
+                        <td class="py-3">
+                            {% if booking.is_verified %}
+                                <span class="badge bg-success">Scanned</span>
+                                <div><small class="text-muted">{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '' }}</small></div>
+                            {% else %}
+                                <span class="badge bg-secondary">Not Scanned</span>
+                            {% endif %}
                         </td>
                         <td class="py-3">{{ booking.created_at.strftime('%b %d, %Y %I:%M %p') }}</td>
                     </tr>

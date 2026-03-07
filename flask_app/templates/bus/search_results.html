@@ -129,7 +129,7 @@
                                     <div class="d-flex align-items-center gap-4">
                                         <!-- Departure -->
                                         <div class="text-center">
-                                            <div class="fw-bold fs-4">{{ route.departure_time.strftime('%H:%M') }}</div>
+                                            <div class="fw-bold fs-4">{{ route.departure_time.strftime('%I:%M %p') }}</div>
                                             <div class="text-muted">{{ route.origin }}</div>
                                         </div>
                                         
@@ -145,7 +145,7 @@
                                         
                                         <!-- Arrival -->
                                         <div class="text-center">
-                                            <div class="fw-bold fs-4">{{ route.arrival_time.strftime('%H:%M') }}</div>
+                                            <div class="fw-bold fs-4">{{ route.arrival_time.strftime('%I:%M %p') }}</div>
                                             <div class="text-muted">{{ route.destination }}</div>
                                         </div>
                                     </div>

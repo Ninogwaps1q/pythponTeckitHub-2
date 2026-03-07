@@ -45,8 +45,9 @@
                                     {% set seat_index = (row - 1) * cols + col %}
                                     {% if seat_index <= total_seats %}
                                         {% set seat_num = row|string ~ '-' ~ col|string %}
-                                        <div class="seat" data-seat="{{ seat_num }}" data-row="{{ row }}" data-col="{{ col }}">
-                                            {{ col }}
+                                        {% set seat_label = seat_num|movie_seat_label %}
+                                        <div class="seat" data-seat="{{ seat_num }}" data-seat-label="{{ seat_label }}" data-row="{{ row }}" data-col="{{ col }}">
+                                            {{ seat_label }}
                                         </div>
                                     {% else %}
                                         <div class="seat empty" aria-hidden="true" style="visibility: hidden; cursor: default;"></div>
@@ -169,6 +170,30 @@
     var pricePerTicket = {{ price|float|tojson }};
     var selectedSeats = [];
     var bookedSeats = [];
+
+    function rowNumberToLetters(rowNum) {
+        var n = parseInt(rowNum, 10);
+        if (!n || n < 1) return '';
+        var out = '';
+        while (n > 0) {
+            var rem = (n - 1) % 26;
+            out = String.fromCharCode(65 + rem) + out;
+            n = Math.floor((n - 1) / 26);
+        }
+        return out;
+    }
+
+    function seatCodeToLabel(seatCode) {
+        var code = String(seatCode || '');
+        var parts = code.split('-');
+        if (parts.length !== 2) return code;
+        var row = parseInt(parts[0], 10);
+        var col = parseInt(parts[1], 10);
+        if (!row || !col) return code;
+        var rowLabel = rowNumberToLetters(row);
+        if (!rowLabel) return code;
+        return rowLabel + String(col);
+    }
     
     // Fetch booked seats for this showtime
     fetch('/get-booked-seats', {
@@ -291,7 +316,7 @@
         
         if (selectedSeats.length > 0) {
             document.getElementById('selectedSeatsDisplay').innerHTML = selectedSeats.map(function (s) {
-                return '<span class=\"badge bg-primary me-1\">' + s + '</span>';
+                return '<span class=\"badge bg-primary me-1\">' + seatCodeToLabel(s) + '</span>';
             }).join('');
         } else {
             document.getElementById('selectedSeatsDisplay').innerHTML = '<span class="text-muted">Click on seats to select</span>';

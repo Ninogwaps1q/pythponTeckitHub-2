@@ -14,7 +14,7 @@
                     <a href="{{ url_for('movies') }}" class="btn btn-primary btn-lg">
                         <i class="bi bi-film me-2"></i>Browse Movies
                     </a>
-                    <a href="{{ url_for('search_bus') }}" class="btn btn-outline-light btn-lg">
+                    <a href="{{ url_for('bus_routes') }}" class="btn btn-outline-light btn-lg">
                         <i class="bi bi-bus-front me-2"></i>Book Bus Tickets
                     </a>
                 </div>
@@ -215,7 +215,7 @@
                                     <div class="d-flex align-items-center gap-3">
                                         <div class="text-center">
                                             <div class="city">{{ route.origin }}</div>
-                                            <div class="time">{{ route.departure_time.strftime('%H:%M') }}</div>
+                                            <div class="time">{{ route.departure_time.strftime('%I:%M %p') }}</div>
                                         </div>
                                         <div class="flex-grow-1 text-center">
                                             <div class="text-muted small mb-1">{{ route.duration or '---' }}</div>
@@ -227,7 +227,7 @@
                                         </div>
                                         <div class="text-center">
                                             <div class="city">{{ route.destination }}</div>
-                                            <div class="time">{{ route.arrival_time.strftime('%H:%M') }}</div>
+                                            <div class="time">{{ route.arrival_time.strftime('%I:%M %p') }}</div>
                                         </div>
                                     </div>
                                 </div>

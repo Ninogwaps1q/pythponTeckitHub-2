@@ -5,8 +5,17 @@
 {% block content %}
 <section class="py-5" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
     <div class="container">
-        <h1 class="text-white fw-bold mb-2">All Bus Routes</h1>
-        <p class="text-white-50">Browse available routes and book your journey</p>
+        <div class="row align-items-center">
+            <div class="col">
+                <h1 class="text-white fw-bold mb-2">All Bus Routes</h1>
+                <p class="text-white-50 mb-0">Browse available routes and book your journey</p>
+            </div>
+            <div class="col-auto mt-3 mt-md-0">
+                <a href="{{ url_for('search_bus') }}" class="btn btn-outline-light">
+                    <i class="bi bi-search me-2"></i>Search Route
+                </a>
+            </div>
+        </div>
     </div>
 </section>
 
@@ -23,7 +32,7 @@
                                     <div class="d-flex align-items-center gap-3">
                                         <div class="text-center">
                                             <div class="city">{{ route.origin }}</div>
-                                            <div class="time">{{ route.departure_time.strftime('%H:%M') }}</div>
+                                            <div class="time">{{ route.departure_time.strftime('%I:%M %p') }}</div>
                                         </div>
                                         <div class="flex-grow-1 text-center">
                                             <div class="text-muted small mb-1">{{ route.duration or '---' }}</div>
@@ -35,7 +44,7 @@
                                         </div>
                                         <div class="text-center">
                                             <div class="city">{{ route.destination }}</div>
-                                            <div class="time">{{ route.arrival_time.strftime('%H:%M') }}</div>
+                                            <div class="time">{{ route.arrival_time.strftime('%I:%M %p') }}</div>
                                         </div>
                                     </div>
                                 </div>
