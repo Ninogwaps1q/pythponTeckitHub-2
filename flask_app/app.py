@@ -3328,6 +3328,9 @@ Assistant:
             else "Sorry, I couldn’t respond right now."
         )
 
+        # Remove star (*) characters from the AI's reply so the output is cleaner.
+        reply = reply.replace('*', '').strip()
+
         return jsonify({
             "success": True,
             "message": reply
