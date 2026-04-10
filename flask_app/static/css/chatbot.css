@@ -19,6 +19,7 @@
   max-width: 70%;
   word-wrap: break-word;
   line-height: 1.4;
+  white-space: pre-wrap;
 }
 
 /* User message */

@@ -48,6 +48,15 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+login_manager.session_protection = 'strong'
+
+@app.after_request
+def add_no_cache_headers(response):
+    if request.endpoint != 'static':
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 
 # Configure Flask-Mail (update with your SMTP settings)
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
@@ -117,6 +126,28 @@ def parse_paymongo_error(resp_data):
         )
         error_code = error_obj.get("code") or error_obj.get("status") or default_code
         return str(error_msg), str(error_code), error_obj
+
+
+def load_chatbot_system_guide():
+    """Load additional chatbot guide text from environment or a local file."""
+    guide_text = os.environ.get("CHATBOT_SYSTEM_GUIDE")
+    if guide_text:
+        return guide_text.strip()
+
+    guide_file = os.environ.get(
+        "CHATBOT_SYSTEM_GUIDE_FILE",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_guide.txt")
+    )
+
+    if os.path.isfile(guide_file):
+        try:
+            with open(guide_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            print(f"[Chatbot] Failed to load system guide from {guide_file}: {e}")
+
+    return ""
+
 
     errors = resp_data.get("errors")
     if isinstance(errors, list) and errors:
@@ -1421,7 +1452,7 @@ def login():
 def logout():
     logout_user()
     flash('You have been logged out.', 'info')
-    return redirect(url_for('index'))
+    return redirect(url_for('login'))
 
 
 # ==================== ROUTES - MOVIES ====================
@@ -3304,6 +3335,10 @@ BEAUTIFUL TEACHER , who is my beautiful teacher. instructor and mentor:
 • Sir Aries Dajay
 
 """
+
+        guide_text = load_chatbot_system_guide()
+        if guide_text:
+            system_prompt += f"\n\nSYSTEM GUIDE:\n{guide_text}\n"
 
         model = genai.GenerativeModel("gemini-2.5-flash")
 

@@ -1,0 +1,10 @@
+# TicketHub System Guide
+
+Add your platform-specific system guide, policies, or support information here.
+
+Examples:
+- How to book movie tickets
+- How to pay with GCash, PayMaya, or cards
+- Booking reference lookup instructions
+- Cancellation/refund policies
+- Help contact details
