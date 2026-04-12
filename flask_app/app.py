@@ -946,8 +946,7 @@ def send_booking_confirmation_email(user, booking_type, booking):
             f"Hello {user.name},\n\n"
             "Your booking is confirmed.\n\n"
             f"{detail_lines_text}\n\n"
-            f"{qr_instruction_text}\n"
-            f"Ticket verification link: {ticket_scan_url}\n\n"
+            f"{qr_instruction_text}\n\n"
             f"{travel_note}\n\n"
             "TicketHub Team"
         )
@@ -965,8 +964,6 @@ def send_booking_confirmation_email(user, booking_type, booking):
             f"<table style='width:100%;border-collapse:collapse;'>{detail_rows_html}</table>"
             f"<hr style='margin:18px 0;border:none;border-top:1px solid #e5e7eb;'>"
             f"{qr_section_html}"
-            f"<p style='margin:12px 0 6px;'>Verification link:</p>"
-            f"<p style='margin:0 0 16px;word-break:break-all;'><a href='{html.escape(str(ticket_scan_url))}'>{html.escape(str(ticket_scan_url))}</a></p>"
             f"<p style='margin:0 0 16px;color:#4b5563;'>{html.escape(travel_note)}</p>"
             f"<p style='margin:0;color:#6b7280;'>TicketHub Team</p>"
             f"</div>"
