@@ -152,7 +152,7 @@
                                     
                                     <div class="mt-3 d-flex gap-2 flex-wrap">
                                         <span class="badge rounded-pill bg-light text-dark">
-                                            <i class="bi bi-bus-front me-1"></i>{{ route.bus_operator or 'Express' }}
+                                            <i class="bi bi-bus-front me-1"></i>{{ route.operator.name if route.operator else 'Express' }}
                                         </span>
                                         {% if route.bus_type %}
                                             <span class="badge rounded-pill bg-light text-dark">{{ route.bus_type }}</span>

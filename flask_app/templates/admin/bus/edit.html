@@ -14,7 +14,7 @@
         <div class="col-lg-8">
             <div class="card">
                 <div class="card-body p-4">
-                    <form method="POST" action="{{ url_for('admin_edit_bus_route', route_id=route.id) }}">
+                    <form method="POST" action="{{ url_for('admin_edit_bus_route', route_id=route.id) }}" enctype="multipart/form-data">
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Origin</label>
@@ -28,9 +28,23 @@
 
                         <div class="row">
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Bus Operator</label>
-                                <input type="text" class="form-control" name="bus_operator" value="{{ route.bus_operator or '' }}">
+                                <label class="form-label">Assigned Operator</label>
+                                <select class="form-select" name="operator_id">
+                                    <option value="">Unassigned</option>
+                                    {% for operator in operators %}
+                                        <option value="{{ operator.id }}" {% if route.operator_id == operator.id %}selected{% endif %}>
+                                            {{ operator.name }} ({{ operator.email }})
+                                        </option>
+                                    {% endfor %}
+                                </select>
                             </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Bus Number</label>
+                                <input type="text" class="form-control" name="bus_number" value="{{ route.bus_number or '' }}" placeholder="e.g., ABC-1234">
+                            </div>
+                        </div>
+
+                        <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Bus Type</label>
                                 <select class="form-select" name="bus_type">
@@ -74,6 +88,14 @@
                                 <label class="form-label">Amenities</label>
                                 <input type="text" class="form-control" name="amenities" value="{{ route.amenities or '' }}" placeholder="e.g., WiFi, Charging, AC">
                             </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Bus Image</label>
+                            <input type="file" class="form-control" name="image" accept="image/png,image/jpeg,image/jpg,image/webp">
+                            {% if route.image %}
+                                <div class="form-text">Current image: {{ route.image }}</div>
+                            {% endif %}
                         </div>
 
                         <div class="mb-3">

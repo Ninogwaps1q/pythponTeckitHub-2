@@ -1,0 +1,15 @@
+{% extends operator_base %}
+
+{% block title %}QR Scanner - TicketHub{% endblock %}
+
+{% block content %}
+    {% if operator_base == 'base.html' %}
+        {% include '_operator_qr_scanner_content.html' %}
+    {% endif %}
+{% endblock %}
+
+{% block operator_content %}
+    {% if operator_base != 'base.html' %}
+        {% include '_operator_qr_scanner_content.html' %}
+    {% endif %}
+{% endblock %}

@@ -37,7 +37,7 @@
                         <td class="px-4 py-3">
                             <span class="fw-semibold">{{ route.origin }} → {{ route.destination }}</span>
                         </td>
-                        <td class="py-3">{{ route.bus_operator or '-' }}</td>
+                        <td class="py-3">{{ route.operator.name if route.operator else '-' }}</td>
                         <td class="py-3">{{ route.bus_type or '-' }}</td>
                         <td class="py-3">{{ route.departure_time.strftime('%I:%M %p') }}</td>
                         <td class="py-3">{{ route.arrival_time.strftime('%I:%M %p') }}</td>

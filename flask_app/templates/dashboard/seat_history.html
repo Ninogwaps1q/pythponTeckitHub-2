@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+
+{% block title %}Seat History - TicketHub{% endblock %}
+
+{% block content %}
+<section class="py-5" style="background:#f8f9fa;">
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+            <div>
+                <h2 class="fw-bold mb-1">{{ seat_context.title }}</h2>
+                <div class="text-muted">{{ seat_context.subtitle }}</div>
+            </div>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+        </div>
+
+        <div class="card">
+            <div class="card-body p-4">
+                <div class="row g-3 mb-4">
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <div class="fw-semibold mb-1">Booking Reference</div>
+                            <div>{{ booking.booking_reference }}</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <div class="fw-semibold mb-1">Payment Status</div>
+                            <span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <div class="fw-semibold mb-1">Your Seats</div>
+                            <div>{{ seat_context.raw_selected_seats|join(', ') if seat_context.raw_selected_seats else 'To be assigned' }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex gap-3 flex-wrap mb-4">
+                    <span class="badge bg-success">Your seats</span>
+                    <span class="badge bg-danger">Reserved</span>
+                    <span class="badge bg-light text-dark border">Available</span>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2">
+                    {% for seat in seat_context.all_seats %}
+                        {% set is_selected = seat in seat_context.selected_seats %}
+                        {% set is_reserved = seat in seat_context.reserved_seats %}
+                        <span class="badge {% if is_selected %}bg-success{% elif is_reserved %}bg-danger{% else %}bg-light text-dark border{% endif %}" style="min-width:56px;padding:0.75rem 0.5rem;">
+                            {{ seat }}
+                        </span>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

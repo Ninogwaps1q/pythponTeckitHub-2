@@ -19,7 +19,7 @@
                                 {% if just_verified %}
                                     <p class="text-muted mb-0">Booking verified successfully and marked as scanned.</p>
                                 {% else %}
-                                    <p class="text-muted mb-0">Booking is already verified/scanned.</p>
+                                    <p class="text-muted mb-0">{{ verified_message or 'Booking is already verified/scanned.' }}</p>
                                 {% endif %}
                             {% else %}
                                 <div class="d-inline-flex align-items-center justify-content-center rounded-circle mb-3"
@@ -65,6 +65,10 @@
                                 <div class="d-flex justify-content-between mb-2">
                                     <span class="text-muted">Verified At</span>
                                     <span>{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '-' }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Verified By</span>
+                                    <span>{{ booking.verified_by.name if booking.verified_by else 'Self-service scan' }}</span>
                                 </div>
 
                                 {% if booking_type == 'movie' %}

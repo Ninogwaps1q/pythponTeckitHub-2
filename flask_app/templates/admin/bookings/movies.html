@@ -41,18 +41,13 @@
                         <td class="py-3">{{ booking.num_tickets }}</td>
                         <td class="py-3 fw-semibold">₱{{ "%.2f"|format(booking.total_amount) }}</td>
                         <td class="py-3">
-                            {% if booking.payment_status in ['completed', 'paid'] %}
-                                    <span class="badge bg-success">Completed</span>
-                                {% elif booking.payment_status == 'pending' %}
-                                    <span class="badge bg-warning">Pending</span>
-                                {% else %}
-                                    <span class="badge bg-danger">Failed</span>
-                                {% endif %}
+                            <span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span>
                         </td>
                         <td class="py-3">
                             {% if booking.is_verified %}
                                 <span class="badge bg-success">Scanned</span>
                                 <div><small class="text-muted">{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '' }}</small></div>
+                                <div><small class="text-muted">{{ booking.verified_by.name if booking.verified_by else 'Self-service scan' }}</small></div>
                             {% else %}
                                 <span class="badge bg-secondary">Not Scanned</span>
                             {% endif %}

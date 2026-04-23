@@ -91,6 +91,7 @@
                                         <th class="py-3">Amount</th>
                                         <th class="py-3">Status</th>
                                         <th class="py-3">Verified</th>
+                                        <th class="py-3">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -108,19 +109,31 @@
                                         <td class="py-3">{{ booking.num_tickets }}</td>
                                         <td class="py-3 fw-semibold">₱{{ "%.2f"|format(booking.total_amount) }}</td>
                                         <td class="py-3">
-                                            {% if booking.payment_status in ['completed','paid'] %}
-                                                <span class="badge-status badge-completed">Completed</span>
-                                            {% else %}
-                                                <span class="badge-status badge-pending">Pending</span>
-                                            {% endif %}
+                                            <span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span>
                                         </td>
                                         <td class="py-3">
                                             {% if booking.is_verified %}
                                                 <span class="badge bg-success">Scanned</span>
                                                 <div><small class="text-muted">{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '' }}</small></div>
+                                                <div><small class="text-muted">{{ booking.verified_by.name if booking.verified_by else 'Self-service scan' }}</small></div>
                                             {% else %}
                                                 <span class="badge bg-secondary">Not Scanned</span>
                                             {% endif %}
+                                        </td>
+                                        <td class="py-3">
+                                            <div class="d-flex flex-column gap-2">
+                                                <a href="{{ url_for('download_booking_ticket_pdf', booking_type='movie', booking_id=booking.id) }}" class="btn btn-sm btn-outline-primary">PDF Ticket</a>
+                                                <a href="{{ url_for('booking_seat_history', booking_type='movie', booking_id=booking.id) }}" class="btn btn-sm btn-outline-secondary">Seat Map</a>
+                                                <a href="{{ ticket_sms_href('movie', booking) }}" class="btn btn-sm btn-outline-success">SMS Ticket</a>
+                                                <form method="POST" action="{{ url_for('resend_booking_email', booking_type='movie', booking_id=booking.id) }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-dark w-100">Resend Email</button>
+                                                </form>
+                                                {% if not booking.is_verified and booking.payment_status not in ['cancelled', 'refunded'] %}
+                                                <form method="POST" action="{{ url_for('cancel_booking', booking_type='movie', booking_id=booking.id) }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100">Cancel / Refund</button>
+                                                </form>
+                                                {% endif %}
+                                            </div>
                                         </td>
                                     </tr>
                                     {% endfor %}
@@ -154,6 +167,7 @@
                                         <th class="py-3">Amount</th>
                                         <th class="py-3">Status</th>
                                         <th class="py-3">Verified</th>
+                                        <th class="py-3">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -170,19 +184,31 @@
                                         <td class="py-3">{{ booking.num_tickets }}</td>
                                         <td class="py-3 fw-semibold">₱{{ "%.2f"|format(booking.total_amount) }}</td>
                                         <td class="py-3">
-                                            {% if booking.payment_status in ['completed','paid'] %}
-                                                    <span class="badge-status badge-completed">Completed</span>
-                                                {% else %}
-                                                    <span class="badge-status badge-pending">Pending</span>
-                                                {% endif %}
+                                            <span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span>
                                         </td>
                                         <td class="py-3">
                                             {% if booking.is_verified %}
                                                 <span class="badge bg-success">Scanned</span>
                                                 <div><small class="text-muted">{{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '' }}</small></div>
+                                                <div><small class="text-muted">{{ booking.verified_by.name if booking.verified_by else 'Self-service scan' }}</small></div>
                                             {% else %}
                                                 <span class="badge bg-secondary">Not Scanned</span>
                                             {% endif %}
+                                        </td>
+                                        <td class="py-3">
+                                            <div class="d-flex flex-column gap-2">
+                                                <a href="{{ url_for('download_booking_ticket_pdf', booking_type='bus', booking_id=booking.id) }}" class="btn btn-sm btn-outline-primary">PDF Ticket</a>
+                                                <a href="{{ url_for('booking_seat_history', booking_type='bus', booking_id=booking.id) }}" class="btn btn-sm btn-outline-secondary">Seat Map</a>
+                                                <a href="{{ ticket_sms_href('bus', booking) }}" class="btn btn-sm btn-outline-success">SMS Ticket</a>
+                                                <form method="POST" action="{{ url_for('resend_booking_email', booking_type='bus', booking_id=booking.id) }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-dark w-100">Resend Email</button>
+                                                </form>
+                                                {% if not booking.is_verified and booking.payment_status not in ['cancelled', 'refunded'] %}
+                                                <form method="POST" action="{{ url_for('cancel_booking', booking_type='bus', booking_id=booking.id) }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100">Cancel / Refund</button>
+                                                </form>
+                                                {% endif %}
+                                            </div>
                                         </td>
                                     </tr>
                                     {% endfor %}

@@ -3,8 +3,12 @@
 Run script for the Movie + Bus Ticketing Application
 """
 import os
-from app import app, db, User, ensure_booking_verification_columns
 from werkzeug.security import generate_password_hash
+
+try:
+    from app import app, db, User, ensure_booking_verification_columns
+except ModuleNotFoundError:
+    from flask_app.app import app, db, User, ensure_booking_verification_columns
 
 def create_admin():
     """Create default admin user if it doesn't exist"""
@@ -14,7 +18,7 @@ def create_admin():
             admin = User(
                 name='Administrator',
                 email='admin@ticketing.com',
-                password=generate_password_hash('admin123'),
+                password_hash=generate_password_hash('admin123'),
                 is_admin=True
             )
             db.session.add(admin)
@@ -50,3 +54,4 @@ if __name__ == '__main__':
     print("="*50 + "\n")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+ 

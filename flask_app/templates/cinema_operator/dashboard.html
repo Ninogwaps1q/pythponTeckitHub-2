@@ -1,0 +1,181 @@
+{% extends 'cinema_operator/base.html' %}
+
+{% block title %}Cinema Operator Dashboard - TicketHub{% endblock %}
+
+{% block operator_content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+    <div>
+        <h2 class="fw-bold mb-0">Cinema Operator Dashboard</h2>
+        <div class="text-muted">Welcome, {{ current_user.name }}</div>
+    </div>
+    <form method="GET" class="d-flex gap-2">
+        <input type="text" class="form-control" name="booking_reference" value="{{ search_reference or '' }}" placeholder="Search booking reference">
+        <button type="submit" class="btn btn-primary">Search</button>
+    </form>
+</div>
+
+<div class="row g-4 mb-5">
+    <div class="col-md-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(229, 9, 20, 0.1);">
+                <i class="bi bi-film" style="color: var(--primary);"></i>
+            </div>
+            <div class="stat-value">{{ stats.total_cinemas }}</div>
+            <div class="stat-label">Cinemas</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(139, 92, 246, 0.1);">
+                <i class="bi bi-ticket-perforated" style="color: #8B5CF6;"></i>
+            </div>
+            <div class="stat-value">{{ stats.movie_bookings }}</div>
+            <div class="stat-label">Paid Bookings</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(34, 197, 94, 0.1);">
+                <i class="bi bi-check2-circle" style="color: #22C55E;"></i>
+            </div>
+            <div class="stat-value">{{ stats.verified_tickets }}</div>
+            <div class="stat-label">Verified Tickets</div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon" style="background: rgba(10, 132, 255, 0.1);">
+                <i class="bi bi-cash" style="color: #0A84FF;"></i>
+            </div>
+            <div class="stat-value">PHP {{ "%.2f"|format(stats.total_revenue) }}</div>
+            <div class="stat-label">Total Revenue</div>
+        </div>
+    </div>
+</div>
+
+{% if search_reference %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Search Result</h5>
+    </div>
+    <div class="card-body">
+        {% if searched_booking %}
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div><strong>Reference:</strong> {{ searched_booking.booking_reference }}</div>
+                    <div><strong>Customer:</strong> {{ searched_booking.user.name }}</div>
+                </div>
+                <div class="col-md-4">
+                    <div><strong>Movie:</strong> {{ searched_booking.showtime.movie.title }}</div>
+                    <div><strong>Cinema:</strong> {{ searched_booking.showtime.cinema.name }}</div>
+                </div>
+                <div class="col-md-4">
+                    <div><strong>Status:</strong> <span class="badge bg-{{ searched_booking.payment_status|payment_status_badge_class }}">{{ searched_booking.payment_status|payment_status_label }}</span></div>
+                    <div><strong>Verified:</strong> {{ 'Yes' if searched_booking.is_verified else 'No' }}</div>
+                </div>
+            </div>
+        {% else %}
+            <div class="text-muted">No booking matched <code>{{ search_reference }}</code>.</div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+    <div class="col-xl-7">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Movie Bookings</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_movie_bookings %}
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Reference</th>
+                                    <th>Movie</th>
+                                    <th>Customer</th>
+                                    <th>Seats</th>
+                                    <th>Amount</th>
+                                    <th>Status</th>
+                                    <th>Verified</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for booking in recent_movie_bookings %}
+                                <tr>
+                                    <td><code>{{ booking.booking_reference }}</code></td>
+                                    <td>{{ booking.showtime.movie.title }}</td>
+                                    <td>{{ booking.user.name }}</td>
+                                    <td>{{ booking.seat_numbers|movie_seat_list if booking.seat_numbers else booking.num_tickets }}</td>
+                                    <td>PHP {{ "%.2f"|format(booking.total_amount) }}</td>
+                                    <td><span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span></td>
+                                    <td>
+                                        {% if booking.is_verified %}
+                                            <span class="badge bg-success">Verified</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">Pending</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-5 text-muted">No recent bookings yet.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-5">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Scan Activity</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_scan_logs %}
+                    <div class="list-group list-group-flush">
+                        {% for scan in recent_scan_logs %}
+                            <div class="list-group-item">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <div class="fw-semibold">{{ scan.booking_reference or 'Unknown booking' }}</div>
+                                        <div class="small text-muted">{{ scan.scan_message or 'No details recorded.' }}</div>
+                                    </div>
+                                    <span class="badge bg-{{ 'success' if scan.scan_result in ['verified', 'already_verified'] else 'danger' }}">{{ scan.scan_result.replace('_', ' ') }}</span>
+                                </div>
+                                <div class="small text-muted mt-1">{{ scan.scan_source }} at {{ scan.created_at.strftime('%b %d, %Y %I:%M %p') }}</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-4 text-muted">No scan activity yet.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Failed Scans</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if failed_scan_logs %}
+                    <div class="list-group list-group-flush">
+                        {% for scan in failed_scan_logs %}
+                            <div class="list-group-item">
+                                <div class="fw-semibold">{{ scan.raw_input or 'No input recorded' }}</div>
+                                <div class="small text-muted">{{ scan.scan_message or 'Scan failed.' }}</div>
+                                <div class="small text-muted mt-1">{{ scan.created_at.strftime('%b %d, %Y %I:%M %p') }}</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-4 text-muted">No failed scans recorded.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

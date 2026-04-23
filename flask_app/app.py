@@ -3,8 +3,9 @@ Movie + Bus Ticketing Platform
 Flask Application with SQLAlchemy, PayMongo Payments (Card, GCash, PayMaya, PayPal), and Admin Panel
 """
 
-import os, base64, io, html
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+import os, base64, io, html, json, threading, warnings
+from urllib.parse import urlparse, quote
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -12,16 +13,29 @@ from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 from functools import wraps
 import requests
-import google.generativeai as genai
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from flask_mail import Mail, Message
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+try:
+    from status_utils import normalize_payment_status, payment_status_badge_class, payment_status_label
+    from ticket_pdf import build_booking_ticket_pdf
+except ModuleNotFoundError:
+    from flask_app.status_utils import normalize_payment_status, payment_status_badge_class, payment_status_label
+    from flask_app.ticket_pdf import build_booking_ticket_pdf
 
 try:
     import qrcode
-except Exception:
+except BaseException:
     qrcode = None
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        import google.generativeai as genai
+except ModuleNotFoundError:
+    genai = None
 
 # Load environment variables from .env file.
 # override=True ensures local project .env is used even if stale shell env vars exist.
@@ -39,7 +53,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Google Generative AI configuration
 GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', 'AIzaSyBk3E9YGt3nEYDNVWp3n28jKks2kTa3PN0')
-genai.configure(api_key=GOOGLE_API_KEY)
+if genai:
+    genai.configure(api_key=GOOGLE_API_KEY)
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -69,6 +84,7 @@ mail = Mail(app)
 
 # Serializer for password reset tokens
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+TICKET_QR_TOKEN_MAX_AGE = 60 * 60 * 24 * 365 * 10
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
@@ -102,6 +118,24 @@ def paymongo_headers():
         "Authorization": f"Basic {auth_b64}",
         "Content-Type": "application/json"
     }
+
+
+def outbound_mail_sender():
+    """Prefer the authenticated SMTP account as sender for better deliverability."""
+    return (
+        str(app.config.get('MAIL_USERNAME') or '').strip()
+        or str(app.config.get('MAIL_DEFAULT_SENDER') or '').strip()
+    )
+
+
+def bus_operator_label(route):
+    """Return a readable operator label across old and new route schemas."""
+    if not route:
+        return 'N/A'
+
+    operator_name = getattr(getattr(route, 'operator', None), 'name', None)
+    legacy_name = getattr(route, 'bus_operator', None)
+    return operator_name or legacy_name or 'N/A'
 
 
 def parse_paymongo_error(resp_data):
@@ -386,11 +420,64 @@ def mark_booking_paid(booking, booking_type=None, payment_method=None, payment_r
     )
 
     try:
-        send_booking_confirmation_email(booking.user, booking_type, booking)
+        enqueue_booking_confirmation_email(booking.user, booking_type, booking)
     except Exception as e:
-        print(f"[Payment] Failed to send confirmation email: {str(e)}")
+        print(f"[Payment] Failed to queue confirmation email: {str(e)}")
 
     return True
+
+
+def cancel_booking_workflow(booking, booking_type=None, actor=None, reason=None):
+    if not booking:
+        return False, 'Booking was not found.'
+
+    booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
+    if booking_type not in ('movie', 'bus'):
+        return False, 'Invalid booking type.'
+
+    if not can_cancel_booking(booking, booking_type):
+        return False, 'This booking can no longer be cancelled.'
+
+    previous_status = normalize_payment_status(getattr(booking, 'payment_status', 'pending'))
+    now_dt = datetime.now()
+    refund_reference = None
+
+    if previous_status in ('paid', 'completed') and getattr(booking, 'payment_reference', None):
+        refund_result = pm_create_refund(
+            booking.payment_reference,
+            amount_cents=int(round(float(booking.total_amount or 0) * 100)),
+            reason='requested_by_customer',
+            notes=reason or 'TicketHub booking cancellation'
+        )
+        if 'data' not in refund_result:
+            return False, f"Refund failed: {refund_result.get('error') or 'Unknown error'}"
+
+        refund_data = refund_result.get('data') or {}
+        refund_reference = refund_data.get('id')
+        booking.payment_status = 'refunded'
+        booking.refunded_at = now_dt
+        booking.refund_reference = refund_reference
+        release_booking_inventory(booking, booking_type)
+    else:
+        booking.payment_status = 'cancelled'
+
+    booking.cancelled_at = now_dt
+    booking.cancelled_by_id = getattr(actor, 'id', None) if actor else None
+    booking.cancellation_reason = str(reason or 'Cancelled by user')[:255]
+    db.session.commit()
+
+    if refund_reference:
+        log_scan_event(
+            operator_user=actor if getattr(actor, 'is_admin', False) else None,
+            booking_type=booking_type,
+            booking=booking,
+            raw_input=booking.booking_reference,
+            scan_source='cancellation',
+            result='refunded',
+            message=f'Booking refunded with refund id {refund_reference}.'
+        )
+
+    return True, ('Booking refunded successfully.' if refund_reference else 'Booking cancelled successfully.')
 
 
 # ==================== PayMongo Helper Functions ====================
@@ -598,10 +685,12 @@ class User(UserMixin, db.Model):
     name = db.Column(db.String(100), nullable=False)
     phone = db.Column(db.String(20))
     is_admin = db.Column(db.Boolean, default=False)
+    is_bus_operator = db.Column(db.Boolean, default=False)
+    is_cinema_operator = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    movie_bookings = db.relationship('MovieBooking', backref='user', lazy=True)
-    bus_bookings = db.relationship('BusBooking', backref='user', lazy=True)
+    movie_bookings = db.relationship('MovieBooking', foreign_keys='MovieBooking.user_id', backref='user', lazy=True)
+    bus_bookings = db.relationship('BusBooking', foreign_keys='BusBooking.user_id', backref='user', lazy=True)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -631,8 +720,11 @@ class Cinema(db.Model):
     name = db.Column(db.String(100), nullable=False)
     location = db.Column(db.String(200))
     total_seats = db.Column(db.Integer, default=100)
+    operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    image = db.Column(db.String(255))  # for picture
     
-    showtimes = db.relationship('Showtime', backref='cinema', lazy=True)
+    showtimes = db.relationship('Showtime', backref='cinema', lazy=True, cascade='all, delete-orphan')
+    operator = db.relationship('User', foreign_keys=[operator_id], backref='cinemas')
 
 
 class Showtime(db.Model):
@@ -644,7 +736,7 @@ class Showtime(db.Model):
     price = db.Column(db.Float, nullable=False)
     available_seats = db.Column(db.Integer)
     
-    bookings = db.relationship('MovieBooking', backref='showtime', lazy=True)
+    bookings = db.relationship('MovieBooking', backref='showtime', lazy=True, cascade='all, delete-orphan')
 
 
 class MovieBooking(db.Model):
@@ -662,14 +754,24 @@ class MovieBooking(db.Model):
     booking_reference = db.Column(db.String(20), unique=True)
     is_verified = db.Column(db.Boolean, default=False, nullable=False)
     verified_at = db.Column(db.DateTime, nullable=True)
+    verified_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
+    cancelled_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    cancellation_reason = db.Column(db.String(255), nullable=True)
+    refund_reference = db.Column(db.String(255), nullable=True)
+    refunded_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    verified_by = db.relationship('User', foreign_keys=[verified_by_id], backref='verified_movie_bookings')
+    cancelled_by = db.relationship('User', foreign_keys=[cancelled_by_id], backref='cancelled_movie_bookings')
 
 
 class BusRoute(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     origin = db.Column(db.String(100), nullable=False)
     destination = db.Column(db.String(100), nullable=False)
-    bus_operator = db.Column(db.String(100))
+    operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    bus_number = db.Column(db.String(50))  # bus plate number or identifier
     bus_type = db.Column(db.String(50))  # AC, Non-AC, Sleeper, etc.
     departure_time = db.Column(db.Time, nullable=False)
     arrival_time = db.Column(db.Time, nullable=False)
@@ -677,9 +779,11 @@ class BusRoute(db.Model):
     price = db.Column(db.Float, nullable=False)
     total_seats = db.Column(db.Integer, default=40)
     amenities = db.Column(db.String(255))  # WiFi, Charging, etc.
+    image = db.Column(db.String(255))  # bus picture
     is_active = db.Column(db.Boolean, default=True)
     
-    schedules = db.relationship('BusSchedule', backref='route', lazy=True)
+    schedules = db.relationship('BusSchedule', backref='route', lazy=True, cascade='all, delete-orphan')
+    operator = db.relationship('User', foreign_keys=[operator_id], backref='bus_routes')
 
 
 class BusSchedule(db.Model):
@@ -688,7 +792,7 @@ class BusSchedule(db.Model):
     travel_date = db.Column(db.Date, nullable=False)
     available_seats = db.Column(db.Integer)
     
-    bookings = db.relationship('BusBooking', backref='schedule', lazy=True)
+    bookings = db.relationship('BusBooking', backref='schedule', lazy=True, cascade='all, delete-orphan')
 
 
 class BusBooking(db.Model):
@@ -707,7 +811,16 @@ class BusBooking(db.Model):
     booking_reference = db.Column(db.String(20), unique=True)
     is_verified = db.Column(db.Boolean, default=False, nullable=False)
     verified_at = db.Column(db.DateTime, nullable=True)
+    verified_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
+    cancelled_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    cancellation_reason = db.Column(db.String(255), nullable=True)
+    refund_reference = db.Column(db.String(255), nullable=True)
+    refunded_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    verified_by = db.relationship('User', foreign_keys=[verified_by_id], backref='verified_bus_bookings')
+    cancelled_by = db.relationship('User', foreign_keys=[cancelled_by_id], backref='cancelled_bus_bookings')
 
 
 class PaymentTransaction(db.Model):
@@ -733,6 +846,61 @@ class PaymentTransaction(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     user = db.relationship('User', foreign_keys=[user_id], backref='payment_transactions')
+
+
+class ScanLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    booking_type = db.Column(db.String(20), nullable=True)
+    booking_id = db.Column(db.Integer, nullable=True)
+    booking_reference = db.Column(db.String(20), nullable=True)
+    raw_input = db.Column(db.Text, nullable=True)
+    scan_source = db.Column(db.String(30), default='manual')
+    scan_result = db.Column(db.String(30), nullable=False)
+    scan_message = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    operator = db.relationship('User', foreign_keys=[operator_id], backref='scan_logs')
+
+
+class EmailDelivery(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    notification_type = db.Column(db.String(50), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    recipient_email = db.Column(db.String(120), nullable=False)
+    booking_type = db.Column(db.String(20), nullable=True)
+    booking_id = db.Column(db.Integer, nullable=True)
+    booking_reference = db.Column(db.String(20), nullable=True)
+    subject = db.Column(db.String(255), nullable=True)
+    payload_json = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), default='queued', nullable=False)
+    attempts = db.Column(db.Integer, default=0, nullable=False)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_attempt_at = db.Column(db.DateTime, nullable=True)
+    sent_at = db.Column(db.DateTime, nullable=True)
+
+    user = db.relationship('User', foreign_keys=[user_id], backref='email_deliveries')
+
+
+class PaymentWebhookEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    event_type = db.Column(db.String(120), nullable=True)
+    resource_id = db.Column(db.String(255), nullable=True)
+    payment_id = db.Column(db.String(255), nullable=True)
+    booking_type = db.Column(db.String(20), nullable=True)
+    booking_id = db.Column(db.Integer, nullable=True)
+    booking_reference = db.Column(db.String(20), nullable=True)
+    payload_json = db.Column(db.Text, nullable=True)
+    processing_status = db.Column(db.String(20), default='pending', nullable=False)
+    error_message = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=True)
+
+
+class SchemaMigration(db.Model):
+    key = db.Column(db.String(100), primary_key=True)
+    applied_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 # ==================== PAYMENT TRANSACTION LOGGING ====================
 
@@ -795,6 +963,69 @@ def build_ticket_scan_url(booking_type, booking, external=True):
     except Exception:
         # Fallback when no request context/base URL is available.
         return f"/ticket/scan/{token}"
+
+
+def extract_ticket_scan_token(qr_data):
+    """Extract a signed ticket token from a raw QR value or scan URL."""
+    raw_qr_data = str(qr_data or '').strip()
+    if not raw_qr_data:
+        return None
+
+    scan_path_marker = '/ticket/scan/'
+    if scan_path_marker in raw_qr_data:
+        parsed_url = urlparse(raw_qr_data)
+        scan_path = parsed_url.path or raw_qr_data
+        marker_index = scan_path.find(scan_path_marker)
+        if marker_index != -1:
+            token = scan_path[marker_index + len(scan_path_marker):].strip().strip('/')
+            return token or None
+
+    if raw_qr_data.count('.') >= 2 and '/' not in raw_qr_data and ' ' not in raw_qr_data:
+        return raw_qr_data
+
+    return None
+
+
+def resolve_booking_from_qr_data(qr_data):
+    """Resolve a booking from a reference, signed token, or full scan URL."""
+    raw_qr_data = str(qr_data or '').strip()
+    if not raw_qr_data:
+        return None, None, 'Please scan a QR code or enter a booking reference.'
+
+    booking = MovieBooking.query.filter_by(booking_reference=raw_qr_data).first()
+    if booking:
+        return 'movie', booking, None
+
+    booking = BusBooking.query.filter_by(booking_reference=raw_qr_data).first()
+    if booking:
+        return 'bus', booking, None
+
+    token = extract_ticket_scan_token(raw_qr_data)
+    if not token:
+        return None, None, 'Invalid QR code or booking not found.'
+
+    try:
+        payload = serializer.loads(token, salt='ticket-qr-salt', max_age=TICKET_QR_TOKEN_MAX_AGE)
+        booking_type = str(payload.get('booking_type') or '').strip().lower()
+        booking_id = payload.get('booking_id')
+        booking_ref = str(payload.get('booking_reference') or '').strip()
+
+        if booking_type not in ('movie', 'bus'):
+            raise BadSignature('Invalid booking type in token.')
+
+        booking = get_booking_or_none(booking_type, booking_id)
+        if not booking:
+            return None, None, 'Booking record was not found.'
+        if str(getattr(booking, 'booking_reference', '') or '').strip() != booking_ref:
+            return None, None, 'Booking reference mismatch.'
+
+        return booking_type, booking, None
+    except SignatureExpired:
+        return None, None, 'This ticket QR has expired.'
+    except BadSignature:
+        return None, None, 'Invalid QR code signature.'
+    except Exception as e:
+        return None, None, f'Unable to verify QR code: {str(e)}'
 
 
 def generate_qr_png_bytes(payload_text):
@@ -880,6 +1111,296 @@ def get_qr_ticket_context(booking_type, booking):
     }
 
 
+@app.template_filter('payment_status_label')
+def payment_status_label_filter(value):
+    return payment_status_label(value)
+
+
+@app.template_filter('payment_status_badge_class')
+def payment_status_badge_class_filter(value):
+    return payment_status_badge_class(value)
+
+
+def booking_verified_by_label(booking):
+    verified_by = getattr(booking, 'verified_by', None)
+    if verified_by and getattr(verified_by, 'name', None):
+        return verified_by.name
+    return 'Self-service scan'
+
+
+def build_ticket_sms_body(booking_type, booking):
+    booking_type = str(booking_type or '').strip().lower()
+    scan_url = build_ticket_scan_url(booking_type, booking, external=True)
+    lines = [
+        f'TicketHub Booking {getattr(booking, "booking_reference", "-")}',
+        f'Status: {payment_status_label(getattr(booking, "payment_status", "pending"))}',
+    ]
+
+    if booking_type == 'movie':
+        showtime = booking.showtime
+        lines.extend([
+            f'Movie: {showtime.movie.title}',
+            f'Cinema: {showtime.cinema.name}',
+            f'Showtime: {showtime.show_date.strftime("%b %d, %Y")} {showtime.show_time.strftime("%I:%M %p")}',
+            f'Seats: {movie_seat_list_to_display(booking.seat_numbers) if booking.seat_numbers else "To be assigned"}',
+        ])
+    else:
+        schedule = booking.schedule
+        route = schedule.route
+        lines.extend([
+            f'Route: {route.origin} -> {route.destination}',
+            f'Travel Date: {schedule.travel_date.strftime("%b %d, %Y")}',
+            f'Departure: {route.departure_time.strftime("%I:%M %p")}',
+            f'Seats: {booking.seat_numbers or "To be assigned"}',
+        ])
+
+    lines.append(f'Verify ticket: {scan_url}')
+    return '\n'.join(lines)
+
+
+def build_ticket_sms_href(booking_type, booking):
+    return f"sms:?&body={quote(build_ticket_sms_body(booking_type, booking))}"
+
+
+app.jinja_env.globals['ticket_sms_href'] = build_ticket_sms_href
+
+
+def log_scan_event(operator_user=None, booking_type=None, booking=None, raw_input=None, scan_source='manual', result='error', message=None):
+    try:
+        scan_log = ScanLog(
+            operator_id=getattr(operator_user, 'id', None),
+            booking_type=booking_type,
+            booking_id=getattr(booking, 'id', None) if booking else None,
+            booking_reference=getattr(booking, 'booking_reference', None) if booking else None,
+            raw_input=str(raw_input or '')[:1000] or None,
+            scan_source=str(scan_source or 'manual')[:30],
+            scan_result=str(result or 'error')[:30],
+            scan_message=str(message or '')[:255] or None,
+        )
+        db.session.add(scan_log)
+        db.session.commit()
+        return scan_log
+    except Exception as e:
+        db.session.rollback()
+        print(f"[ScanLog] Could not save scan event: {str(e)}")
+        return None
+
+
+def operator_can_verify_booking(user, booking, booking_type):
+    if not user or not booking:
+        return False
+    if user.is_admin:
+        return True
+    if booking_type == 'bus' and user.is_bus_operator:
+        return booking.schedule.route.operator_id == user.id
+    if booking_type == 'movie' and user.is_cinema_operator:
+        return booking.showtime.cinema.operator_id == user.id
+    return False
+
+
+def release_booking_inventory(booking, booking_type):
+    if not booking:
+        return
+
+    try:
+        if booking_type == 'movie':
+            showtime = booking.showtime
+            if showtime and showtime.available_seats is not None:
+                showtime.available_seats = int(showtime.available_seats or 0) + int(booking.num_tickets or 0)
+        elif booking_type == 'bus':
+            schedule = booking.schedule
+            if schedule and schedule.available_seats is not None:
+                schedule.available_seats = int(schedule.available_seats or 0) + int(booking.num_tickets or 0)
+    except Exception as e:
+        print(f"[Booking] Could not release inventory: {str(e)}")
+
+
+def booking_has_started(booking, booking_type=None):
+    booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
+    now_dt = datetime.now()
+
+    try:
+        if booking_type == 'movie':
+            showtime_dt = datetime.combine(booking.showtime.show_date, booking.showtime.show_time)
+            return showtime_dt <= now_dt
+        if booking_type == 'bus':
+            travel_dt = datetime.combine(booking.schedule.travel_date, booking.schedule.route.departure_time)
+            return travel_dt <= now_dt
+    except Exception:
+        return False
+
+    return False
+
+
+def can_cancel_booking(booking, booking_type=None):
+    if not booking:
+        return False
+
+    booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
+    current_status = normalize_payment_status(getattr(booking, 'payment_status', 'pending'))
+    if getattr(booking, 'is_verified', False):
+        return False
+    if current_status in ('cancelled', 'refunded'):
+        return False
+    if booking_has_started(booking, booking_type):
+        return False
+    return True
+
+
+def enqueue_email_delivery(notification_type, user, booking_type=None, booking=None, extra_payload=None):
+    payload = dict(extra_payload or {})
+    payload.update({
+        'booking_type': booking_type,
+        'booking_id': getattr(booking, 'id', None) if booking else None,
+        'booking_reference': getattr(booking, 'booking_reference', None) if booking else None,
+    })
+
+    subject = f"{notification_type.replace('_', ' ').title()}"
+    if booking:
+        subject = f"{subject} - {booking.booking_reference}"
+
+    delivery = EmailDelivery(
+        notification_type=notification_type,
+        user_id=user.id,
+        recipient_email=user.email,
+        booking_type=booking_type,
+        booking_id=getattr(booking, 'id', None) if booking else None,
+        booking_reference=getattr(booking, 'booking_reference', None) if booking else None,
+        subject=subject,
+        payload_json=json.dumps(payload),
+        status='queued',
+    )
+    db.session.add(delivery)
+    db.session.commit()
+
+    threading.Thread(target=process_email_delivery_job, args=(delivery.id,), daemon=True).start()
+    return delivery
+
+
+def process_email_delivery_job(delivery_id):
+    with app.app_context():
+        delivery = EmailDelivery.query.get(delivery_id)
+        if not delivery or delivery.status == 'sent':
+            return False
+
+        payload = {}
+        try:
+            payload = json.loads(delivery.payload_json or '{}')
+        except Exception:
+            payload = {}
+
+        delivery.status = 'processing'
+        delivery.attempts = int(delivery.attempts or 0) + 1
+        delivery.last_attempt_at = datetime.now()
+        db.session.commit()
+
+        user = User.query.get(delivery.user_id)
+        booking_type = payload.get('booking_type') or delivery.booking_type
+        booking = get_booking_or_none(booking_type, payload.get('booking_id') or delivery.booking_id) if booking_type else None
+
+        if not user or (booking_type and not booking):
+            delivery.status = 'failed'
+            delivery.last_error = 'Missing user or booking for email delivery.'
+            db.session.commit()
+            return False
+
+        ok = False
+        if delivery.notification_type == 'booking_confirmation':
+            ok = send_booking_confirmation_email(user, booking_type, booking)
+        elif delivery.notification_type == 'booking_verified':
+            verified_at_value = payload.get('verified_at')
+            verified_at = None
+            if verified_at_value:
+                try:
+                    verified_at = datetime.fromisoformat(str(verified_at_value))
+                except Exception:
+                    verified_at = None
+            ok = send_booking_verified_email(user, booking_type, booking, verified_at=verified_at)
+
+        delivery.status = 'sent' if ok else 'failed'
+        delivery.last_error = None if ok else 'Delivery function returned False.'
+        delivery.sent_at = datetime.now() if ok else None
+        db.session.commit()
+        return ok
+
+
+def enqueue_booking_confirmation_email(user, booking_type, booking):
+    return enqueue_email_delivery('booking_confirmation', user, booking_type, booking)
+
+
+def enqueue_booking_verified_email(user, booking_type, booking, verified_at=None):
+    payload = {}
+    if verified_at:
+        payload['verified_at'] = verified_at.isoformat()
+    return enqueue_email_delivery('booking_verified', user, booking_type, booking, extra_payload=payload)
+
+
+def create_webhook_event_log(event_type=None, resource_id=None, payment_id=None, payload=None):
+    try:
+        event = PaymentWebhookEvent(
+            event_type=event_type,
+            resource_id=resource_id,
+            payment_id=payment_id,
+            payload_json=json.dumps(payload or {}),
+            processing_status='pending',
+        )
+        db.session.add(event)
+        db.session.commit()
+        return event
+    except Exception as e:
+        db.session.rollback()
+        print(f"[WebhookLog] Could not create webhook log: {str(e)}")
+        return None
+
+
+def finalize_webhook_event_log(event, booking_type=None, booking=None, status='processed', error_message=None):
+    if not event:
+        return
+
+    try:
+        event.booking_type = booking_type or event.booking_type
+        event.booking_id = getattr(booking, 'id', None) if booking else event.booking_id
+        event.booking_reference = getattr(booking, 'booking_reference', None) if booking else event.booking_reference
+        event.processing_status = status
+        event.error_message = error_message
+        event.processed_at = datetime.now()
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"[WebhookLog] Could not finalize webhook log: {str(e)}")
+
+
+def verify_booking_for_scan(booking, booking_type, operator_user=None, raw_input=None, scan_source='manual'):
+    fresh_booking = get_booking_or_none(booking_type, getattr(booking, 'id', None))
+    if not fresh_booking:
+        message = 'Booking record was not found.'
+        log_scan_event(operator_user=operator_user, booking_type=booking_type, raw_input=raw_input, scan_source=scan_source, result='missing', message=message)
+        return None, False, message
+
+    if not is_booking_paid(fresh_booking):
+        message = 'Booking exists but payment is not completed.'
+        log_scan_event(operator_user=operator_user, booking_type=booking_type, booking=fresh_booking, raw_input=raw_input, scan_source=scan_source, result='unpaid', message=message)
+        return fresh_booking, False, message
+
+    if fresh_booking.is_verified:
+        verifier_name = booking_verified_by_label(fresh_booking)
+        verified_at_text = fresh_booking.verified_at.strftime('%b %d, %Y %I:%M %p') if fresh_booking.verified_at else 'an earlier time'
+        message = f'Booking already verified on {verified_at_text} by {verifier_name}.'
+        log_scan_event(operator_user=operator_user, booking_type=booking_type, booking=fresh_booking, raw_input=raw_input, scan_source=scan_source, result='already_verified', message=message)
+        return fresh_booking, False, message
+
+    fresh_booking.is_verified = True
+    fresh_booking.verified_at = datetime.now()
+    if operator_user:
+        fresh_booking.verified_by_id = operator_user.id
+    db.session.commit()
+
+    message = f'Booking {fresh_booking.booking_reference} verified successfully.'
+    log_scan_event(operator_user=operator_user, booking_type=booking_type, booking=fresh_booking, raw_input=raw_input, scan_source=scan_source, result='verified', message=message)
+    enqueue_booking_verified_email(fresh_booking.user, booking_type, fresh_booking, verified_at=fresh_booking.verified_at)
+    return fresh_booking, True, message
+
+
 def send_booking_confirmation_email(user, booking_type, booking):
     """Send booking confirmation email to user with QR ticket."""
     try:
@@ -917,7 +1438,7 @@ def send_booking_confirmation_email(user, booking_type, booking):
             detail_rows = [
                 ("Booking Reference", booking.booking_reference),
                 ("Route", f"{route.origin} -> {route.destination}"),
-                ("Bus Operator", route.bus_operator or "N/A"),
+                ("Bus Operator", bus_operator_label(route)),
                 ("Bus Type", route.bus_type or "Standard"),
                 ("Travel Date", schedule.travel_date.strftime('%B %d, %Y')),
                 ("Departure", route.departure_time.strftime('%I:%M %p')),
@@ -972,6 +1493,7 @@ def send_booking_confirmation_email(user, booking_type, booking):
         msg = Message(
             subject=subject,
             recipients=[user.email],
+            sender=outbound_mail_sender(),
             body=body_text,
             html=body_html
         )
@@ -1054,6 +1576,7 @@ def send_booking_verified_email(user, booking_type, booking, verified_at=None):
         msg = Message(
             subject=subject,
             recipients=[user.email],
+            sender=outbound_mail_sender(),
             body=body_text,
             html=body_html
         )
@@ -1078,6 +1601,41 @@ def admin_required(f):
         if not current_user.is_authenticated or not current_user.is_admin:
             flash('You need admin access for this action.', 'error')
             return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def bus_operator_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not (current_user.is_admin or current_user.is_bus_operator):
+            flash('You need bus operator access for this action.', 'error')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def cinema_operator_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not (current_user.is_admin or current_user.is_cinema_operator):
+            flash('You need cinema operator access for this action.', 'error')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def regular_user_only(f):
+    """Decorator to restrict operators from accessing regular user routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if current_user.is_authenticated:
+            if current_user.is_bus_operator and not current_user.is_admin:
+                flash('Bus operators cannot access this page. Please use the operator dashboard.', 'info')
+                return redirect(url_for('bus_operator_dashboard'))
+            if current_user.is_cinema_operator and not current_user.is_admin:
+                flash('Cinema operators cannot access this page. Please use the operator dashboard.', 'info')
+                return redirect(url_for('cinema_operator_dashboard'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1308,6 +1866,13 @@ def is_showtime_departed(showtime, now_dt=None):
 
 @app.route('/')
 def index():
+    # Redirect operators to their dashboards
+    if current_user.is_authenticated:
+        if current_user.is_bus_operator and not current_user.is_admin:
+            return redirect(url_for('bus_operator_dashboard'))
+        if current_user.is_cinema_operator and not current_user.is_admin:
+            return redirect(url_for('cinema_operator_dashboard'))
+    
     movies = Movie.query.filter_by(is_active=True).order_by(Movie.release_date.desc()).limit(6).all()
     today = datetime.now().date()
     all_routes = BusRoute.query.filter_by(is_active=True).order_by(BusRoute.departure_time).all()
@@ -1425,7 +1990,13 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
-        return redirect(url_for('index'))
+        # Redirect authenticated users based on their role
+        if current_user.is_bus_operator:
+            return redirect(url_for('bus_operator_dashboard'))
+        elif current_user.is_cinema_operator:
+            return redirect(url_for('cinema_operator_dashboard'))
+        else:
+            return redirect(url_for('index'))
     
     if request.method == 'POST':
         email = request.form.get('email')
@@ -1437,7 +2008,14 @@ def login():
             login_user(user)
             next_page = request.args.get('next')
             flash('Welcome back!', 'success')
-            return redirect(next_page or url_for('index'))
+            
+            # Redirect based on user role
+            if user.is_bus_operator:
+                return redirect(next_page or url_for('bus_operator_dashboard'))
+            elif user.is_cinema_operator:
+                return redirect(next_page or url_for('cinema_operator_dashboard'))
+            else:
+                return redirect(next_page or url_for('index'))
         
         flash('Invalid email or password.', 'error')
     
@@ -1455,6 +2033,7 @@ def logout():
 # ==================== ROUTES - MOVIES ====================
 
 @app.route('/movies')
+@regular_user_only
 def movies():
     selected_genre = (request.args.get('genre') or 'all').strip().lower()
     q = (request.args.get('q') or '').strip()
@@ -1484,6 +2063,7 @@ def movies():
 
 
 @app.route('/movies/<int:movie_id>')
+@regular_user_only
 def movie_detail(movie_id):
     movie = Movie.query.get_or_404(movie_id)
     showtimes = Showtime.query.filter(
@@ -1496,6 +2076,7 @@ def movie_detail(movie_id):
 
 @app.route('/movies/book/<int:showtime_id>', methods=['GET', 'POST'])
 @login_required
+@regular_user_only
 def book_movie(showtime_id):
     showtime = Showtime.query.get_or_404(showtime_id)
 
@@ -1577,6 +2158,7 @@ def book_movie(showtime_id):
 
 @app.route('/bus')
 @app.route('/bus/list')
+@regular_user_only
 def bus_routes():
     today = datetime.now().date()
     routes = BusRoute.query.filter_by(is_active=True).order_by(BusRoute.departure_time).all()
@@ -1585,6 +2167,7 @@ def bus_routes():
 
 
 @app.route('/bus/search', methods=['GET', 'POST'])
+@regular_user_only
 def search_bus():
     if request.method == 'POST':
         origin = request.form.get('origin')
@@ -1609,6 +2192,7 @@ def search_bus():
 
 @app.route('/bus/book/<int:route_id>', methods=['GET', 'POST'])
 @login_required
+@regular_user_only
 def book_bus(route_id):
     route = BusRoute.query.get_or_404(route_id)
     travel_date = request.args.get('date', datetime.now().date().isoformat())
@@ -2350,9 +2934,10 @@ def scan_ticket_qr(token):
     booking_type = None
     ticket_valid = False
     just_verified = False
+    verified_message = None
 
     try:
-        payload = serializer.loads(token, salt='ticket-qr-salt', max_age=60 * 60 * 24 * 365 * 10)
+        payload = serializer.loads(token, salt='ticket-qr-salt', max_age=TICKET_QR_TOKEN_MAX_AGE)
         booking_type = str(payload.get('booking_type') or '').strip().lower()
         booking_id = payload.get('booking_id')
         booking_ref = str(payload.get('booking_reference') or '').strip()
@@ -2365,19 +2950,17 @@ def scan_ticket_qr(token):
             error_message = 'Booking record was not found.'
         elif str(getattr(booking, 'booking_reference', '') or '').strip() != booking_ref:
             error_message = 'Booking reference mismatch.'
-        elif not is_booking_paid(booking):
-            error_message = 'Booking exists but payment is not completed.'
         else:
-            ticket_valid = True
-            if hasattr(booking, 'is_verified') and not bool(booking.is_verified):
-                booking.is_verified = True
-                booking.verified_at = datetime.now()
-                db.session.commit()
-                just_verified = True
-                try:
-                    send_booking_verified_email(booking.user, booking_type, booking, verified_at=booking.verified_at)
-                except Exception as notify_err:
-                    print(f"[Email] Could not send verification follow-up email: {str(notify_err)}")
+            booking, just_verified, verified_message = verify_booking_for_scan(
+                booking,
+                booking_type,
+                operator_user=None,
+                raw_input=token,
+                scan_source='ticket_link'
+            )
+            ticket_valid = bool(booking) and is_booking_paid(booking)
+            if not ticket_valid:
+                error_message = verified_message or 'This ticket could not be verified.'
     except SignatureExpired:
         error_message = 'This ticket QR has expired.'
     except BadSignature:
@@ -2392,7 +2975,8 @@ def scan_ticket_qr(token):
         booking_type=booking_type,
         error_message=error_message,
         scanned_at=datetime.now(),
-        just_verified=just_verified
+        just_verified=just_verified,
+        verified_message=verified_message
     )
 
 # ----------------------
@@ -2406,6 +2990,7 @@ def paymongo_webhook():
     metadata = {}
     resource_id = None
     paid_payment_id = None
+    webhook_event = None
 
     try:
         data = payload.get('data') if isinstance(payload, dict) else {}
@@ -2432,8 +3017,22 @@ def paymongo_webhook():
     except Exception:
         pass
 
+    webhook_event = create_webhook_event_log(
+        event_type=event_type,
+        resource_id=resource_id,
+        payment_id=paid_payment_id,
+        payload=payload
+    )
+
     booking, booking_type = find_booking_from_metadata(metadata=metadata, payment_reference=resource_id)
     if not booking:
+        finalize_webhook_event_log(
+            webhook_event,
+            booking_type=booking_type,
+            booking=None,
+            status='ignored',
+            error_message='Booking not found for webhook payload.'
+        )
         return jsonify({"success": True, "ignored": "booking_not_found"}), 200
 
     booking_type = booking_type or infer_booking_type(booking) or 'movie'
@@ -2456,6 +3055,7 @@ def paymongo_webhook():
                 booking.payment_reference = resource_id
             db.session.commit()
 
+    finalize_webhook_event_log(webhook_event, booking_type=booking_type, booking=booking, status='processed')
     return jsonify({"success": True}), 200
 
 @app.route('/check-ewallet-payment/<booking_type>/<int:booking_id>')
@@ -2972,12 +3572,128 @@ def api_transactions_summary():
 
 # ==================== ROUTES - USER DASHBOARD ====================
 
+def user_can_access_booking(user, booking):
+    return bool(user and booking and (user.is_admin or booking.user_id == user.id))
+
+
+def get_latest_email_status_map(user_id):
+    deliveries = EmailDelivery.query.filter_by(user_id=user_id).order_by(EmailDelivery.created_at.desc()).all()
+    latest = {}
+    for delivery in deliveries:
+        key = f"{delivery.booking_type}:{delivery.booking_id}:{delivery.notification_type}"
+        if key not in latest:
+            latest[key] = delivery
+    return latest
+
+
+def build_booking_seat_history_context(booking_type, booking):
+    booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
+    if booking_type == 'movie':
+        total_seats = get_showtime_total_seats(booking.showtime)
+        reserved_seats, _unknown = get_reserved_movie_seats(booking.showtime_id, statuses=['pending', 'paid', 'completed'])
+        selected_seats = [s.strip() for s in str(booking.seat_numbers or '').split(',') if s and s.strip()]
+        return {
+            'title': f"{booking.showtime.movie.title} Seat Map",
+            'subtitle': f"{booking.showtime.cinema.name} on {booking.showtime.show_date.strftime('%b %d, %Y')} at {booking.showtime.show_time.strftime('%I:%M %p')}",
+            'all_seats': [movie_seat_label_to_display(f"{row}-{col}") for row in range(1, ((int(total_seats or 0) - 1) // 10) + 2) for col in range(1, 11)][:int(total_seats or 0)],
+            'reserved_seats': {movie_seat_label_to_display(seat) for seat in reserved_seats},
+            'selected_seats': {movie_seat_label_to_display(seat) for seat in selected_seats},
+            'raw_selected_seats': selected_seats,
+        }
+
+    total_seats = int(booking.schedule.route.total_seats or booking.schedule.available_seats or 0)
+    reserved_seats, _unknown = get_reserved_bus_seats(booking.schedule_id, statuses=['pending', 'paid', 'completed'])
+    selected_seats = [s.strip() for s in str(booking.seat_numbers or '').split(',') if s and s.strip()]
+    return {
+        'title': f"{booking.schedule.route.origin} to {booking.schedule.route.destination} Seat Map",
+        'subtitle': f"Travel date {booking.schedule.travel_date.strftime('%b %d, %Y')} at {booking.schedule.route.departure_time.strftime('%I:%M %p')}",
+        'all_seats': [str(i) for i in range(1, total_seats + 1)],
+        'reserved_seats': set(reserved_seats),
+        'selected_seats': set(selected_seats),
+        'raw_selected_seats': selected_seats,
+    }
+
+
+@app.route('/booking/<booking_type>/<int:booking_id>/ticket.pdf')
+@login_required
+def download_booking_ticket_pdf(booking_type, booking_id):
+    booking_type = str(booking_type or '').strip().lower()
+    booking = get_booking_for_request(booking_type, booking_id)
+    if not user_can_access_booking(current_user, booking):
+        flash('You do not have permission to access this ticket.', 'error')
+        return redirect(url_for('dashboard'))
+
+    pdf_bytes = build_booking_ticket_pdf(
+        booking_type,
+        booking,
+        scan_url=build_ticket_scan_url(booking_type, booking, external=True)
+    )
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        as_attachment=True,
+        download_name=f"{booking.booking_reference}_ticket.pdf",
+        mimetype='application/pdf'
+    )
+
+
+@app.route('/booking/<booking_type>/<int:booking_id>/resend-email', methods=['POST'])
+@login_required
+def resend_booking_email(booking_type, booking_id):
+    booking_type = str(booking_type or '').strip().lower()
+    booking = get_booking_for_request(booking_type, booking_id)
+    if not user_can_access_booking(current_user, booking):
+        flash('You do not have permission to resend this email.', 'error')
+        return redirect(url_for('dashboard'))
+
+    enqueue_booking_confirmation_email(booking.user, booking_type, booking)
+    flash('Ticket email queued successfully.', 'success')
+    return redirect(request.referrer or url_for('dashboard'))
+
+
+@app.route('/booking/<booking_type>/<int:booking_id>/cancel', methods=['POST'])
+@login_required
+def cancel_booking(booking_type, booking_id):
+    booking_type = str(booking_type or '').strip().lower()
+    booking = get_booking_for_request(booking_type, booking_id)
+    if not user_can_access_booking(current_user, booking):
+        flash('You do not have permission to cancel this booking.', 'error')
+        return redirect(url_for('dashboard'))
+
+    success, message = cancel_booking_workflow(
+        booking,
+        booking_type=booking_type,
+        actor=current_user,
+        reason=request.form.get('reason') or 'Cancelled from dashboard'
+    )
+    flash(message, 'success' if success else 'error')
+    return redirect(request.referrer or url_for('dashboard'))
+
+
+@app.route('/booking/<booking_type>/<int:booking_id>/seat-history')
+@login_required
+def booking_seat_history(booking_type, booking_id):
+    booking_type = str(booking_type or '').strip().lower()
+    booking = get_booking_for_request(booking_type, booking_id)
+    if not user_can_access_booking(current_user, booking):
+        flash('You do not have permission to view this booking.', 'error')
+        return redirect(url_for('dashboard'))
+
+    seat_context = build_booking_seat_history_context(booking_type, booking)
+    return render_template('dashboard/seat_history.html', booking=booking, booking_type=booking_type, seat_context=seat_context)
+
 @app.route('/dashboard')
 @login_required
+@regular_user_only
 def dashboard():
     movie_bookings = MovieBooking.query.filter_by(user_id=current_user.id).order_by(MovieBooking.created_at.desc()).all()
     bus_bookings = BusBooking.query.filter_by(user_id=current_user.id).order_by(BusBooking.created_at.desc()).all()
-    return render_template('dashboard/index.html', movie_bookings=movie_bookings, bus_bookings=bus_bookings)
+    latest_email_statuses = get_latest_email_status_map(current_user.id)
+    return render_template(
+        'dashboard/index.html',
+        movie_bookings=movie_bookings,
+        bus_bookings=bus_bookings,
+        latest_email_statuses=latest_email_statuses
+    )
 
 
 # ==================== ROUTES - ADMIN ====================
@@ -3008,12 +3724,219 @@ def admin_dashboard():
                          recent_bus_bookings=recent_bus_bookings)
 
 
+@app.route('/bus-operator')
+@login_required
+@bus_operator_required
+def bus_operator_dashboard():
+    completed_statuses = ['completed', 'paid']
+    bus_routes = BusRoute.query.filter_by(operator_id=current_user.id).all()
+    route_ids = [r.id for r in bus_routes]
+    search_reference = str(request.args.get('booking_reference') or '').strip()
+    bookings_query = BusBooking.query.filter(BusBooking.schedule.has(BusSchedule.route_id.in_(route_ids)))
+
+    bus_bookings = bookings_query.filter(BusBooking.payment_status.in_(completed_statuses)).count()
+    bus_revenue = sum([b.total_amount for b in bookings_query.filter(BusBooking.payment_status.in_(completed_statuses)).all()])
+
+    stats = {
+        'total_routes': len(bus_routes),
+        'bus_bookings': bus_bookings,
+        'total_revenue': float(bus_revenue),
+        'verified_tickets': bookings_query.filter_by(is_verified=True).count(),
+    }
+    recent_bus_bookings = bookings_query.order_by(BusBooking.created_at.desc()).limit(10).all()
+    searched_booking = bookings_query.filter_by(booking_reference=search_reference).first() if search_reference else None
+    recent_scan_logs = ScanLog.query.filter_by(operator_id=current_user.id).order_by(ScanLog.created_at.desc()).limit(8).all()
+    failed_scan_logs = ScanLog.query.filter(
+        ScanLog.operator_id == current_user.id,
+        ScanLog.scan_result.in_(['invalid', 'denied', 'unpaid', 'missing', 'error'])
+    ).order_by(ScanLog.created_at.desc()).limit(8).all()
+    return render_template(
+        'bus_operator/dashboard.html',
+        stats=stats,
+        recent_bus_bookings=recent_bus_bookings,
+        bus_routes=bus_routes,
+        searched_booking=searched_booking,
+        search_reference=search_reference,
+        recent_scan_logs=recent_scan_logs,
+        failed_scan_logs=failed_scan_logs
+    )
+
+
+@app.route('/cinema-operator')
+@login_required
+@cinema_operator_required
+def cinema_operator_dashboard():
+    # Stats for cinema operator
+    completed_statuses = ['completed', 'paid']
+    cinemas = Cinema.query.filter_by(operator_id=current_user.id).all()
+    cinema_ids = [c.id for c in cinemas]
+    search_reference = str(request.args.get('booking_reference') or '').strip()
+    bookings_query = MovieBooking.query.filter(MovieBooking.showtime.has(Showtime.cinema_id.in_(cinema_ids)))
+
+    movie_bookings = bookings_query.filter(MovieBooking.payment_status.in_(completed_statuses)).count()
+    movie_revenue = sum([b.total_amount for b in bookings_query.filter(MovieBooking.payment_status.in_(completed_statuses)).all()])
+
+    stats = {
+        'total_cinemas': len(cinemas),
+        'movie_bookings': movie_bookings,
+        'total_revenue': float(movie_revenue),
+        'verified_tickets': bookings_query.filter_by(is_verified=True).count(),
+    }
+    recent_movie_bookings = bookings_query.order_by(MovieBooking.created_at.desc()).limit(10).all()
+    searched_booking = bookings_query.filter_by(booking_reference=search_reference).first() if search_reference else None
+    recent_scan_logs = ScanLog.query.filter_by(operator_id=current_user.id).order_by(ScanLog.created_at.desc()).limit(8).all()
+    failed_scan_logs = ScanLog.query.filter(
+        ScanLog.operator_id == current_user.id,
+        ScanLog.scan_result.in_(['invalid', 'denied', 'unpaid', 'missing', 'error'])
+    ).order_by(ScanLog.created_at.desc()).limit(8).all()
+    return render_template(
+        'cinema_operator/dashboard.html',
+        stats=stats,
+        recent_movie_bookings=recent_movie_bookings,
+        cinemas=cinemas,
+        searched_booking=searched_booking,
+        search_reference=search_reference,
+        recent_scan_logs=recent_scan_logs,
+        failed_scan_logs=failed_scan_logs
+    )
+
+
+@app.route('/operator/qr-scanner', methods=['GET', 'POST'])
+@login_required
+def operator_qr_scanner():
+    if not (current_user.is_admin or current_user.is_bus_operator or current_user.is_cinema_operator):
+        flash('You do not have permission to access this page.', 'error')
+        return redirect(url_for('index'))
+
+    operator_base = 'base.html'
+    if current_user.is_bus_operator:
+        operator_base = 'bus_operator/base.html'
+    elif current_user.is_cinema_operator:
+        operator_base = 'cinema_operator/base.html'
+    
+    booking = None
+    booking_type = None
+    qr_data = ''
+    scan_source = 'manual'
+
+    if request.method == 'POST':
+        qr_data = str(request.form.get('qr_data') or '').strip()
+        scan_source = str(request.form.get('scan_source') or 'manual').strip() or 'manual'
+        booking_type, booking, error_message = resolve_booking_from_qr_data(qr_data)
+
+        if error_message:
+            flash(error_message, 'error')
+            log_scan_event(
+                operator_user=current_user,
+                booking_type=booking_type,
+                raw_input=qr_data,
+                scan_source=scan_source,
+                result='invalid',
+                message=error_message
+            )
+            booking = None
+            booking_type = None
+        else:
+            permission_denied = False
+
+            if not current_user.is_admin:
+                if booking_type == 'bus' and current_user.is_bus_operator:
+                    permission_denied = booking.schedule.route.operator_id != current_user.id
+                elif booking_type == 'movie' and current_user.is_cinema_operator:
+                    permission_denied = booking.showtime.cinema.operator_id != current_user.id
+                else:
+                    permission_denied = True
+
+            if permission_denied:
+                flash('You do not have permission to verify this booking.', 'error')
+                log_scan_event(
+                    operator_user=current_user,
+                    booking_type=booking_type,
+                    booking=booking,
+                    raw_input=qr_data,
+                    scan_source=scan_source,
+                    result='denied',
+                    message='You do not have permission to verify this booking.'
+                )
+                booking = None
+                booking_type = None
+            else:
+                booking, just_verified, scan_message = verify_booking_for_scan(
+                    booking,
+                    booking_type,
+                    operator_user=current_user,
+                    raw_input=qr_data,
+                    scan_source=scan_source
+                )
+                if booking and just_verified:
+                    flash(scan_message, 'success')
+                elif booking:
+                    flash(scan_message, 'info')
+                else:
+                    flash(scan_message or 'Unable to verify booking.', 'error')
+                    booking_type = None
+
+    return render_template(
+        'operator_qr_scanner.html',
+        booking=booking,
+        booking_type=booking_type,
+        operator_base=operator_base,
+        qr_data=qr_data
+    )
+
+
 @app.route('/admin/transactions')
 @login_required
 @admin_required
 def admin_transactions():
     """Render admin transactions page (client-side fetches /api/transactions)."""
     return render_template('admin/transactions.html')
+
+
+@app.route('/admin/email-deliveries/<int:delivery_id>/retry', methods=['POST'])
+@login_required
+@admin_required
+def admin_retry_email_delivery(delivery_id):
+    delivery = EmailDelivery.query.get_or_404(delivery_id)
+    delivery.status = 'queued'
+    delivery.last_error = None
+    db.session.commit()
+    threading.Thread(target=process_email_delivery_job, args=(delivery.id,), daemon=True).start()
+    flash('Email retry queued successfully.', 'success')
+    return redirect(request.referrer or url_for('admin_payment_reconciliation'))
+
+
+@app.route('/admin/payments/reconcile')
+@login_required
+@admin_required
+def admin_payment_reconciliation():
+    failed_email_deliveries = EmailDelivery.query.filter_by(status='failed').order_by(EmailDelivery.created_at.desc()).limit(20).all()
+    recent_webhook_events = PaymentWebhookEvent.query.order_by(PaymentWebhookEvent.created_at.desc()).limit(20).all()
+
+    inconsistent_bookings = []
+    completed_transactions = PaymentTransaction.query.filter(PaymentTransaction.payment_status == 'completed').all()
+    completed_lookup = {(txn.booking_type, txn.booking_id) for txn in completed_transactions}
+
+    for booking in MovieBooking.query.order_by(MovieBooking.created_at.desc()).limit(100).all():
+        status = normalize_payment_status(booking.payment_status)
+        if status in ('paid', 'completed') and ('movie', booking.id) not in completed_lookup:
+            inconsistent_bookings.append(('movie', booking, 'Booking is paid but no completed payment transaction was found.'))
+        elif status == 'pending' and ('movie', booking.id) in completed_lookup:
+            inconsistent_bookings.append(('movie', booking, 'Booking is pending but a completed payment transaction exists.'))
+
+    for booking in BusBooking.query.order_by(BusBooking.created_at.desc()).limit(100).all():
+        status = normalize_payment_status(booking.payment_status)
+        if status in ('paid', 'completed') and ('bus', booking.id) not in completed_lookup:
+            inconsistent_bookings.append(('bus', booking, 'Booking is paid but no completed payment transaction was found.'))
+        elif status == 'pending' and ('bus', booking.id) in completed_lookup:
+            inconsistent_bookings.append(('bus', booking, 'Booking is pending but a completed payment transaction exists.'))
+
+    return render_template(
+        'admin/payment_reconciliation.html',
+        failed_email_deliveries=failed_email_deliveries,
+        recent_webhook_events=recent_webhook_events,
+        inconsistent_bookings=inconsistent_bookings[:30]
+    )
 
 
 # Admin - Movies Management
@@ -3112,9 +4035,13 @@ def admin_edit_movie(movie_id):
 @admin_required
 def admin_delete_movie(movie_id):
     movie = Movie.query.get_or_404(movie_id)
-    db.session.delete(movie)
-    db.session.commit()
-    flash('Movie deleted successfully!', 'success')
+    try:
+        db.session.delete(movie)
+        db.session.commit()
+        flash('Movie deleted successfully!', 'success')
+    except IntegrityError:
+        db.session.rollback()
+        flash('Movie could not be deleted because it still has related records.', 'danger')
     return redirect(url_for('admin_movies'))
 
 
@@ -3177,15 +4104,27 @@ def admin_add_cinema():
         name = request.form.get('name')
         location = request.form.get('location')
         total_seats = int(request.form.get('total_seats', 100))
+        operator_id = request.form.get('operator_id')
+        operator_id = int(operator_id) if operator_id else None
         
-        cinema = Cinema(name=name, location=location, total_seats=total_seats)
+        # Handle image upload
+        image_filename = None
+        if 'image' in request.files:
+            file = request.files['image']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                image_filename = filename
+        
+        cinema = Cinema(name=name, location=location, total_seats=total_seats, operator_id=operator_id, image=image_filename)
         db.session.add(cinema)
         db.session.commit()
         
         flash('Cinema added successfully!', 'success')
         return redirect(url_for('admin_cinemas'))
     
-    return render_template('admin/cinemas/add.html')
+    operators = User.query.filter((User.is_cinema_operator == True) | (User.is_admin == True)).all()
+    return render_template('admin/cinemas/add.html', operators=operators)
 
 
 # Admin - Bus Routes Management
@@ -3204,7 +4143,9 @@ def admin_add_bus_route():
     if request.method == 'POST':
         origin = request.form.get('origin')
         destination = request.form.get('destination')
-        bus_operator = request.form.get('bus_operator')
+        operator_id = request.form.get('operator_id')
+        operator_id = int(operator_id) if operator_id else None
+        bus_number = request.form.get('bus_number')
         bus_type = request.form.get('bus_type')
         departure_time = datetime.strptime(request.form.get('departure_time'), '%H:%M').time()
         arrival_time = datetime.strptime(request.form.get('arrival_time'), '%H:%M').time()
@@ -3213,17 +4154,28 @@ def admin_add_bus_route():
         total_seats = int(request.form.get('total_seats', 40))
         amenities = request.form.get('amenities')
         
+        # Handle image upload
+        image_filename = None
+        if 'image' in request.files:
+            file = request.files['image']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                image_filename = filename
+        
         route = BusRoute(
             origin=origin,
             destination=destination,
-            bus_operator=bus_operator,
+            operator_id=operator_id,
+            bus_number=bus_number,
             bus_type=bus_type,
             departure_time=departure_time,
             arrival_time=arrival_time,
             duration=duration,
             price=price,
             total_seats=total_seats,
-            amenities=amenities
+            amenities=amenities,
+            image=image_filename
         )
         db.session.add(route)
         db.session.commit()
@@ -3231,7 +4183,8 @@ def admin_add_bus_route():
         flash('Bus route added successfully!', 'success')
         return redirect(url_for('admin_bus_routes'))
     
-    return render_template('admin/bus/add.html')
+    operators = User.query.filter((User.is_bus_operator == True) | (User.is_admin == True)).all()
+    return render_template('admin/bus/add.html', operators=operators)
 
 
 @app.route('/admin/bus-routes/edit/<int:route_id>', methods=['GET', 'POST'])
@@ -3239,11 +4192,14 @@ def admin_add_bus_route():
 @admin_required
 def admin_edit_bus_route(route_id):
     route = BusRoute.query.get_or_404(route_id)
+    operators = User.query.filter((User.is_bus_operator == True) | (User.is_admin == True)).all()
     
     if request.method == 'POST':
         route.origin = request.form.get('origin')
         route.destination = request.form.get('destination')
-        route.bus_operator = request.form.get('bus_operator')
+        operator_id = request.form.get('operator_id')
+        route.operator_id = int(operator_id) if operator_id else None
+        route.bus_number = request.form.get('bus_number')
         route.bus_type = request.form.get('bus_type')
         route.departure_time = datetime.strptime(request.form.get('departure_time'), '%H:%M').time()
         route.arrival_time = datetime.strptime(request.form.get('arrival_time'), '%H:%M').time()
@@ -3252,12 +4208,19 @@ def admin_edit_bus_route(route_id):
         route.total_seats = int(request.form.get('total_seats', 40))
         route.amenities = request.form.get('amenities')
         route.is_active = 'is_active' in request.form
+
+        if 'image' in request.files:
+            file = request.files['image']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                route.image = filename
         
         db.session.commit()
         flash('Bus route updated successfully!', 'success')
         return redirect(url_for('admin_bus_routes'))
     
-    return render_template('admin/bus/edit.html', route=route)
+    return render_template('admin/bus/edit.html', route=route, operators=operators)
 
 
 @app.route('/admin/bus-routes/delete/<int:route_id>', methods=['POST'])
@@ -3265,9 +4228,13 @@ def admin_edit_bus_route(route_id):
 @admin_required
 def admin_delete_bus_route(route_id):
     route = BusRoute.query.get_or_404(route_id)
-    db.session.delete(route)
-    db.session.commit()
-    flash('Bus route deleted successfully!', 'success')
+    try:
+        db.session.delete(route)
+        db.session.commit()
+        flash('Bus route deleted successfully!', 'success')
+    except IntegrityError:
+        db.session.rollback()
+        flash('Bus route could not be deleted because it still has related records.', 'danger')
     return redirect(url_for('admin_bus_routes'))
 
 
@@ -3298,6 +4265,8 @@ def chatbot():
 
         if not user_message:
             return jsonify({"error": "Message is empty"}), 400
+        if not genai:
+            return jsonify({"success": False, "error": "Chatbot service is not configured on this server."}), 503
 
         system_prompt = """
 You are TicketHub Assistant, a friendly and professional chatbot
@@ -3385,40 +4354,70 @@ def chatbot_page():
 
 # ==================== INITIALIZE DATABASE ====================
 
-def ensure_booking_verification_columns():
-    """Best-effort migration for QR verification columns on existing SQLite DBs."""
-    try:
-        movie_table = MovieBooking.__table__.name
-        bus_table = BusBooking.__table__.name
-        targets = {
-            movie_table: {
-                'is_verified': f"ALTER TABLE {movie_table} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
-                'verified_at': f"ALTER TABLE {movie_table} ADD COLUMN verified_at DATETIME"
-            },
-            bus_table: {
-                'is_verified': f"ALTER TABLE {bus_table} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
-                'verified_at': f"ALTER TABLE {bus_table} ADD COLUMN verified_at DATETIME"
+def run_schema_migrations():
+    """Apply lightweight versioned migrations for existing SQLite databases."""
+    migration_steps = [
+        (
+            'booking_verification_columns',
+            {
+                MovieBooking.__table__.name: {
+                    'is_verified': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
+                    'verified_at': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN verified_at DATETIME",
+                },
+                BusBooking.__table__.name: {
+                    'is_verified': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN is_verified BOOLEAN DEFAULT 0",
+                    'verified_at': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN verified_at DATETIME",
+                },
             }
-        }
+        ),
+        (
+            'booking_lifecycle_audit_columns',
+            {
+                MovieBooking.__table__.name: {
+                    'verified_by_id': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN verified_by_id INTEGER",
+                    'cancelled_at': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN cancelled_at DATETIME",
+                    'cancelled_by_id': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN cancelled_by_id INTEGER",
+                    'cancellation_reason': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN cancellation_reason VARCHAR(255)",
+                    'refund_reference': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN refund_reference VARCHAR(255)",
+                    'refunded_at': f"ALTER TABLE {MovieBooking.__table__.name} ADD COLUMN refunded_at DATETIME",
+                },
+                BusBooking.__table__.name: {
+                    'verified_by_id': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN verified_by_id INTEGER",
+                    'cancelled_at': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN cancelled_at DATETIME",
+                    'cancelled_by_id': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN cancelled_by_id INTEGER",
+                    'cancellation_reason': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN cancellation_reason VARCHAR(255)",
+                    'refund_reference': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN refund_reference VARCHAR(255)",
+                    'refunded_at': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN refunded_at DATETIME",
+                },
+            }
+        ),
+    ]
 
-        for table_name, columns in targets.items():
-            existing = {
-                row[1] for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-            }
-            for col_name, alter_sql in columns.items():
-                if col_name not in existing:
-                    db.session.execute(text(alter_sql))
-                    print(f"[DB] Added column {table_name}.{col_name}")
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        print(f"[DB] Could not ensure booking verification columns: {str(e)}")
+    for migration_key, targets in migration_steps:
+        if SchemaMigration.query.get(migration_key):
+            continue
+
+        try:
+            for table_name, columns in targets.items():
+                existing_columns = {
+                    row[1] for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+                }
+                for col_name, alter_sql in columns.items():
+                    if col_name not in existing_columns:
+                        db.session.execute(text(alter_sql))
+                        print(f"[DB] Added column {table_name}.{col_name}")
+
+            db.session.add(SchemaMigration(key=migration_key))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f"[DB] Could not apply migration {migration_key}: {str(e)}")
 
 
 def init_db():
     with app.app_context():
         db.create_all()
-        ensure_booking_verification_columns()
+        run_schema_migrations()
         
         # Create admin user if not exists
         admin = User.query.filter_by(email='admin@example.com').first()
@@ -3440,6 +4439,11 @@ def init_db():
         print("Database initialized successfully!")
 
 
+def ensure_booking_verification_columns():
+    """Backward-compatible schema bootstrap for older startup code."""
+    run_schema_migrations()
+
+
 @app.route('/api/forgot-password', methods=['POST'])
 def api_forgot_password():
     data = request.get_json()
@@ -3456,7 +4460,7 @@ def api_forgot_password():
             subject='TicketHub Password Reset',
             recipients=[email],
             body=f"To reset your password, click the link: {reset_url}\nIf you did not request this, ignore this email.",
-            sender=app.config['MAIL_DEFAULT_SENDER']
+            sender=outbound_mail_sender()
         )
         mail.send(msg)
     except Exception as e:

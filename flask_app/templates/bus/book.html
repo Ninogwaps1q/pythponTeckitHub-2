@@ -124,7 +124,7 @@
                             </div>
                             <div class="d-flex justify-content-between">
                                 <span class="text-muted">Operator</span>
-                                <span class="fw-semibold">{{ route.bus_operator or 'Express' }}</span>
+                                <span class="fw-semibold">{{ route.operator.name if route.operator else 'Express' }}</span>
                             </div>
                         </div>
                         

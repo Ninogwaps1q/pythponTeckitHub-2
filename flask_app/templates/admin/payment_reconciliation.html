@@ -1,0 +1,129 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Payment Reconciliation - Admin - TicketHub{% endblock %}
+
+{% block admin_content %}
+<div class="container-fluid py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="h3 mb-0">Payment Reconciliation</h1>
+            <div class="text-muted">Review failed emails, webhook events, and booking mismatches.</div>
+        </div>
+        <a href="{{ url_for('admin_transactions') }}" class="btn btn-outline-secondary">Back to Transactions</a>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-xl-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Failed Email Deliveries</h5>
+                </div>
+                <div class="card-body p-0">
+                    {% if failed_email_deliveries %}
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Recipient</th>
+                                        <th>Type</th>
+                                        <th>Booking</th>
+                                        <th>Error</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for delivery in failed_email_deliveries %}
+                                    <tr>
+                                        <td>{{ delivery.recipient_email }}</td>
+                                        <td>{{ delivery.notification_type.replace('_', ' ').title() }}</td>
+                                        <td>{{ delivery.booking_reference or '-' }}</td>
+                                        <td>{{ delivery.last_error or 'Unknown error' }}</td>
+                                        <td>
+                                            <form method="POST" action="{{ url_for('admin_retry_email_delivery', delivery_id=delivery.id) }}">
+                                                <button type="submit" class="btn btn-sm btn-primary">Retry</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="text-center py-4 text-muted">No failed email deliveries.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Recent Webhook Events</h5>
+                </div>
+                <div class="card-body p-0">
+                    {% if recent_webhook_events %}
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Event</th>
+                                        <th>Booking</th>
+                                        <th>Status</th>
+                                        <th>Processed</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for event in recent_webhook_events %}
+                                    <tr>
+                                        <td>{{ event.event_type or '-' }}</td>
+                                        <td>{{ event.booking_reference or event.resource_id or '-' }}</td>
+                                        <td><span class="badge bg-{{ 'success' if event.processing_status == 'processed' else 'warning' }}">{{ event.processing_status }}</span></td>
+                                        <td>{{ event.processed_at.strftime('%b %d, %Y %I:%M %p') if event.processed_at else '-' }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="text-center py-4 text-muted">No webhook events recorded.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5 class="mb-0">Inconsistent Bookings</h5>
+        </div>
+        <div class="card-body p-0">
+            {% if inconsistent_bookings %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Reference</th>
+                                <th>Status</th>
+                                <th>Issue</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for booking_type, booking, issue in inconsistent_bookings %}
+                            <tr>
+                                <td>{{ booking_type|upper }}</td>
+                                <td>{{ booking.booking_reference }}</td>
+                                <td><span class="badge bg-{{ booking.payment_status|payment_status_badge_class }}">{{ booking.payment_status|payment_status_label }}</span></td>
+                                <td>{{ issue }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="text-center py-4 text-muted">No booking inconsistencies detected in the latest sample.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

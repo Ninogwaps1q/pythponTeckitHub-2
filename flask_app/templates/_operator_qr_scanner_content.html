@@ -1,0 +1,129 @@
+<section class="py-5">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card shadow">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0"><i class="bi bi-qr-code-scan me-2"></i>QR Code Scanner</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-4">Scan the QR code on the customer's ticket to verify their booking.</p>
+
+                        {% if booking %}
+                            <div class="alert alert-success">
+                                <h5>Booking Verified Successfully!</h5>
+                                <div class="row mt-3">
+                                    <div class="col-sm-6">
+                                        <strong>Reference:</strong> {{ booking.booking_reference }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Type:</strong> {{ 'Movie' if booking_type == 'movie' else 'Bus' }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Customer:</strong> {{ booking.user.name }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Tickets:</strong> {{ booking.num_tickets }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Amount:</strong> PHP {{ "%.2f"|format(booking.total_amount) }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Status:</strong>
+                                        <span class="badge bg-success">Verified</span>
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Verified At:</strong> {{ booking.verified_at.strftime('%b %d, %Y %I:%M %p') if booking.verified_at else '-' }}
+                                    </div>
+                                    <div class="col-sm-6">
+                                        <strong>Verified By:</strong> {{ booking.verified_by.name if booking.verified_by else 'Self-service scan' }}
+                                    </div>
+                                </div>
+                                {% if booking_type == 'movie' %}
+                                    <div class="row mt-2">
+                                        <div class="col-sm-6">
+                                            <strong>Movie:</strong> {{ booking.showtime.movie.title }}
+                                        </div>
+                                        <div class="col-sm-6">
+                                            <strong>Cinema:</strong> {{ booking.showtime.cinema.name }}
+                                        </div>
+                                        <div class="col-sm-6">
+                                            <strong>Showtime:</strong> {{ booking.showtime.show_time.strftime('%I:%M %p') }}
+                                        </div>
+                                        <div class="col-sm-6">
+                                            <strong>Date:</strong> {{ booking.showtime.show_date.strftime('%B %d, %Y') }}
+                                        </div>
+                                    </div>
+                                {% else %}
+                                    <div class="row mt-2">
+                                        <div class="col-sm-6">
+                                            <strong>Route:</strong> {{ booking.schedule.route.origin }} &rarr; {{ booking.schedule.route.destination }}
+                                        </div>
+                                        <div class="col-sm-6">
+                                            <strong>Departure:</strong> {{ booking.schedule.route.departure_time.strftime('%I:%M %p') }}
+                                        </div>
+                                        <div class="col-sm-6">
+                                            <strong>Date:</strong> {{ booking.schedule.travel_date.strftime('%B %d, %Y') }}
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+
+                        <form id="qrScannerForm" method="POST" class="mb-4">
+                            <input type="hidden" name="scan_source" id="scan_source" value="manual">
+                            <div class="mb-3">
+                                <label for="qr_data" class="form-label">QR Code Data</label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="qr_data"
+                                    name="qr_data"
+                                    value="{{ qr_data or '' }}"
+                                    placeholder="Enter a booking reference, signed ticket token, or scan URL"
+                                    required
+                                >
+                                <div class="form-text">You can paste the full ticket QR link, a signed token, or the booking reference.</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-circle me-2"></i>Verify Booking
+                            </button>
+                        </form>
+
+                        <div class="text-center">
+                            <button id="startCamera" type="button" class="btn btn-outline-secondary">
+                                <i class="bi bi-camera me-2"></i>Start Camera Scanner
+                            </button>
+                        </div>
+
+                        <div class="mt-3">
+                            <label for="qrImageFile" class="form-label">Or Upload a QR Code Image</label>
+                            <input
+                                type="file"
+                                class="form-control"
+                                id="qrImageFile"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                            >
+                            <div class="form-text">Choose a screenshot or photo of the ticket QR code to verify the booking automatically.</div>
+                            <img id="qrImagePreview" alt="QR preview" class="img-fluid rounded border mt-3" style="display: none; max-height: 240px;">
+                        </div>
+
+                        <div id="cameraContainer" class="mt-4" style="display: none;">
+                            <div id="qr-reader" style="width: 100%; min-height: 320px; border: 1px solid #ccc; border-radius: 12px; overflow: hidden; background: #000;"></div>
+                            <div class="mt-2 d-flex justify-content-center">
+                                <button id="stopCamera" type="button" class="btn btn-danger" style="display: none;">Stop Camera</button>
+                            </div>
+                        </div>
+
+                        <p id="scannerStatus" class="small text-muted mt-3 mb-0">
+                            Camera scanning works best in Chrome or Edge on localhost or HTTPS. You can always paste the QR value manually.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script src="{{ url_for('static', filename='js/operator_qr_scanner.js') }}"></script>

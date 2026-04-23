@@ -1,7 +1,7 @@
 """
 Install a QR image into the Flask app static images folder as 'gcash_qr.png'.
 Usage:
-    python scripts\install_qr.py path\to\your_qr_image.png
+    python scripts/install_qr.py path/to/your_qr_image.png
 
 This will copy the provided image to:
     flask_app/static/images/gcash_qr.png
