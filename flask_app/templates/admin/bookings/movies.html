@@ -20,6 +20,7 @@
                         <th class="py-3">User</th>
                         <th class="py-3">Movie</th>
                         <th class="py-3">Cinema</th>
+                        <th class="py-3">Operator</th>
                         <th class="py-3">Show Date</th>
                         <th class="py-3">Tickets</th>
                         <th class="py-3">Amount</th>
@@ -37,6 +38,7 @@
                         <td class="py-3">{{ booking.user.name }}</td>
                         <td class="py-3">{{ booking.showtime.movie.title }}</td>
                         <td class="py-3">{{ booking.showtime.cinema.name }}</td>
+                        <td class="py-3">{{ booking.showtime.cinema.operator.name if booking.showtime.cinema.operator else 'Unassigned' }}</td>
                         <td class="py-3">{{ booking.showtime.show_date.strftime('%b %d, %Y') }}</td>
                         <td class="py-3">{{ booking.num_tickets }}</td>
                         <td class="py-3 fw-semibold">₱{{ "%.2f"|format(booking.total_amount) }}</td>

@@ -41,7 +41,7 @@
                         <td class="py-3">{{ route.bus_type or '-' }}</td>
                         <td class="py-3">{{ route.departure_time.strftime('%I:%M %p') }}</td>
                         <td class="py-3">{{ route.arrival_time.strftime('%I:%M %p') }}</td>
-                        <td class="py-3">{{ route.duration or '-' }}</td>
+                        <td class="py-3">{{ route.duration or format_route_duration(route.departure_time, route.arrival_time) or '-' }}</td>
                         <td class="py-3 fw-semibold">₱{{ "%.2f"|format(route.price) }}</td>
                         <td class="py-3">{{ route.total_seats }}</td>
                         <td class="py-3">

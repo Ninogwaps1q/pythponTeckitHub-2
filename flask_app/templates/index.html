@@ -218,7 +218,7 @@
                                             <div class="time">{{ route.departure_time.strftime('%I:%M %p') }}</div>
                                         </div>
                                         <div class="flex-grow-1 text-center">
-                                            <div class="text-muted small mb-1">{{ route.duration or '---' }}</div>
+                                            <div class="text-muted small mb-1">{{ route.duration or format_route_duration(route.departure_time, route.arrival_time) or '---' }}</div>
                                             <div class="position-relative">
                                                 <hr class="my-0" style="border-top: 2px dashed var(--gray-300);">
                                                 <i class="bi bi-bus-front position-absolute top-50 start-50 translate-middle bg-white px-2 text-muted"></i>

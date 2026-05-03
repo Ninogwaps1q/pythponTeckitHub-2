@@ -14,7 +14,7 @@
         <div class="col-lg-8">
             <div class="card">
                 <div class="card-body p-4">
-                    <form method="POST" action="{{ url_for('admin_add_bus_route') }}" enctype="multipart/form-data">
+                    <form method="POST" action="{{ url_for('admin_add_bus_route') }}">
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Origin</label>
@@ -58,18 +58,19 @@
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Departure Time</label>
-                                <input type="time" class="form-control" name="departure_time" required>
+                                <input type="time" class="form-control" id="departureTime" name="departure_time" required>
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Arrival Time</label>
-                                <input type="time" class="form-control" name="arrival_time" required>
+                                <input type="time" class="form-control" id="arrivalTime" name="arrival_time" required>
                             </div>
                         </div>
 
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Duration</label>
-                                <input type="text" class="form-control" name="duration" placeholder="e.g., 8 hours">
+                                <input type="text" class="form-control" id="durationField" name="duration" placeholder="Calculated automatically" readonly>
+                                <div class="form-text">Calculated from departure and arrival time. Earlier arrival means next-day arrival.</div>
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Price (₱)</label>
@@ -88,11 +89,6 @@
                             </div>
                         </div>
 
-                        <div class="mb-3">
-                            <label class="form-label">Bus Image</label>
-                            <input type="file" class="form-control" name="image" accept="image/png,image/jpeg,image/jpg,image/webp">
-                        </div>
-
                         <div class="d-flex gap-2">
                             <button type="submit" class="btn btn-primary">Add Route</button>
                             <a href="{{ url_for('admin_bus_routes') }}" class="btn btn-secondary">Cancel</a>
@@ -103,4 +99,57 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    (function () {
+        'use strict';
+
+        var departureInput = document.getElementById('departureTime');
+        var arrivalInput = document.getElementById('arrivalTime');
+        var durationInput = document.getElementById('durationField');
+
+        function parseTimeToMinutes(value) {
+            if (!value) return null;
+
+            var parts = String(value).split(':');
+            if (parts.length < 2) return null;
+
+            var hours = parseInt(parts[0], 10);
+            var minutes = parseInt(parts[1], 10);
+
+            if (isNaN(hours) || isNaN(minutes)) return null;
+            return (hours * 60) + minutes;
+        }
+
+        function updateDuration() {
+            var departureMinutes = parseTimeToMinutes(departureInput.value);
+            var arrivalMinutes = parseTimeToMinutes(arrivalInput.value);
+
+            if (departureMinutes === null || arrivalMinutes === null) {
+                durationInput.value = '';
+                return;
+            }
+
+            if (arrivalMinutes <= departureMinutes) {
+                arrivalMinutes += 24 * 60;
+            }
+
+            var totalMinutes = arrivalMinutes - departureMinutes;
+            var hours = Math.floor(totalMinutes / 60);
+            var minutes = totalMinutes % 60;
+            var parts = [];
+
+            if (hours) parts.push(hours + 'h');
+            if (minutes) parts.push(minutes + 'm');
+
+            durationInput.value = parts.length ? parts.join(' ') : '0m';
+        }
+
+        departureInput.addEventListener('input', updateDuration);
+        arrivalInput.addEventListener('input', updateDuration);
+        updateDuration();
+    }());
+</script>
 {% endblock %}

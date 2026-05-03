@@ -3,7 +3,7 @@ Movie + Bus Ticketing Platform
 Flask Application with SQLAlchemy, PayMongo Payments (Card, GCash, PayMaya, PayPal), and Admin Panel
 """
 
-import os, base64, io, html, json, threading, warnings
+import os, base64, io, html, json, math, re, threading, warnings
 from urllib.parse import urlparse, quote
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
@@ -87,6 +87,101 @@ serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 TICKET_QR_TOKEN_MAX_AGE = 60 * 60 * 24 * 365 * 10
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+
+DEFAULT_CINEMA_LAYOUT_STYLE = 'classic'
+DEFAULT_CINEMA_VIP_ROWS = 1
+DEFAULT_CINEMA_VIP_SURCHARGE = 120.0
+
+CINEMA_LAYOUT_PRESETS = {
+    'classic': {
+        'label': 'Classic Hall',
+        'description': 'Traditional 5-by-5 seating with a center aisle.',
+        'segments': [5, 5],
+        'screen_label': 'Main Screen',
+        'offset_cycle': [0, 0, 0, 0],
+        'default_vip_rows': 1,
+    },
+    'stadium': {
+        'label': 'Stadium Bowl',
+        'description': 'A wider stadium-style room with multiple aisles and curved rows.',
+        'segments': [4, 4, 4],
+        'screen_label': 'Stadium Screen',
+        'offset_cycle': [0, 14, 28, 14],
+        'default_vip_rows': 2,
+    },
+    'luxe': {
+        'label': 'Luxe Lounge',
+        'description': 'Spacious lounge seating with a premium VIP section near the back.',
+        'segments': [4, 4],
+        'screen_label': 'Lounge Screen',
+        'offset_cycle': [12, 0, 12, 0],
+        'default_vip_rows': 2,
+    },
+    'premiere': {
+        'label': 'Premiere Suite',
+        'description': 'A boutique cinema layout with wider paired seats and a premium center block.',
+        'segments': [3, 2, 3],
+        'screen_label': 'Premiere Screen',
+        'offset_cycle': [26, 14, 0, 14],
+        'default_vip_rows': 2,
+    },
+    'imax': {
+        'label': 'IMAX Arena',
+        'description': 'A large-format auditorium with broad rows and a commanding center block.',
+        'segments': [6, 7, 6],
+        'screen_label': 'IMAX Screen',
+        'offset_cycle': [0, 18, 36, 18],
+        'default_vip_rows': 3,
+    },
+    'balcony': {
+        'label': 'Balcony Tier',
+        'description': 'Tiered balcony seating with a balanced center section and sweeping sightlines.',
+        'segments': [4, 5, 4],
+        'screen_label': 'Balcony Screen',
+        'offset_cycle': [20, 10, 0, 10],
+        'default_vip_rows': 2,
+    },
+    'studio': {
+        'label': 'Studio Room',
+        'description': 'A smaller screening room with cozy staggered seating for intimate screenings.',
+        'segments': [3, 4, 3],
+        'screen_label': 'Studio Screen',
+        'offset_cycle': [8, 0, 8, 0],
+        'default_vip_rows': 1,
+    },
+    'family': {
+        'label': 'Family Deck',
+        'description': 'A family-friendly layout with roomy side blocks and an easy central aisle.',
+        'segments': [4, 3, 4],
+        'screen_label': 'Family Screen',
+        'offset_cycle': [0, 10, 20, 10],
+        'default_vip_rows': 1,
+    },
+    'royal': {
+        'label': 'Royal Circle',
+        'description': 'Premium curved seating with a spacious center cluster designed for high-end screenings.',
+        'segments': [5, 6, 5],
+        'screen_label': 'Royal Screen',
+        'offset_cycle': [24, 12, 0, 12],
+        'default_vip_rows': 3,
+    },
+    'duo': {
+        'label': 'Duo Pods',
+        'description': 'Paired-seat pods for date nights and boutique screenings with more aisle breaks.',
+        'segments': [2, 2, 2, 2],
+        'screen_label': 'Pod Screen',
+        'offset_cycle': [14, 0, 14, 0],
+        'default_vip_rows': 1,
+    },
+    'festival': {
+        'label': 'Festival House',
+        'description': 'An event-style room with wide sections suited for premieres and special screenings.',
+        'segments': [5, 4, 5],
+        'screen_label': 'Festival Screen',
+        'offset_cycle': [0, 16, 32, 16],
+        'default_vip_rows': 2,
+    },
+}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -722,6 +817,9 @@ class Cinema(db.Model):
     total_seats = db.Column(db.Integer, default=100)
     operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     image = db.Column(db.String(255))  # for picture
+    seat_layout_style = db.Column(db.String(40), default=DEFAULT_CINEMA_LAYOUT_STYLE, nullable=False)
+    vip_rows = db.Column(db.Integer, default=DEFAULT_CINEMA_VIP_ROWS)
+    vip_surcharge = db.Column(db.Float, default=DEFAULT_CINEMA_VIP_SURCHARGE)
     
     showtimes = db.relationship('Showtime', backref='cinema', lazy=True, cascade='all, delete-orphan')
     operator = db.relationship('User', foreign_keys=[operator_id], backref='cinemas')
@@ -848,6 +946,37 @@ class PaymentTransaction(db.Model):
     user = db.relationship('User', foreign_keys=[user_id], backref='payment_transactions')
 
 
+class SalesSubmission(db.Model):
+    """Operator-submitted sales/remittance snapshot for a date range."""
+    id = db.Column(db.Integer, primary_key=True)
+    operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    business_type = db.Column(db.String(20), nullable=False)  # movie or bus
+    target_id = db.Column(db.Integer, nullable=False)  # cinema_id or route_id
+    target_label = db.Column(db.String(200), nullable=False)
+    date_from = db.Column(db.Date, nullable=False)
+    date_to = db.Column(db.Date, nullable=False)
+
+    gross_amount = db.Column(db.Float, default=0.0, nullable=False)
+    refund_amount = db.Column(db.Float, default=0.0, nullable=False)
+    net_amount = db.Column(db.Float, default=0.0, nullable=False)
+    booking_count = db.Column(db.Integer, default=0, nullable=False)
+    transaction_count = db.Column(db.Integer, default=0, nullable=False)
+    refund_count = db.Column(db.Integer, default=0, nullable=False)
+
+    status = db.Column(db.String(20), default='submitted', nullable=False)  # submitted, approved, rejected
+    snapshot_json = db.Column(db.Text, nullable=True)
+    review_note = db.Column(db.String(255), nullable=True)
+
+    submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    reviewed_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    operator = db.relationship('User', foreign_keys=[operator_id], backref='sales_submissions')
+    reviewed_by_user = db.relationship('User', foreign_keys=[reviewed_by_id], backref='reviewed_sales_submissions')
+
+
 class ScanLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     operator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
@@ -936,6 +1065,340 @@ def log_payment_transaction(user_id, booking_type, booking_id, booking_ref, amou
     except Exception as e:
         print(f"Error logging payment transaction: {str(e)}")
         return None
+
+
+def parse_report_date(value, default_date=None):
+    """Parse YYYY-MM-DD dates used in reporting pages."""
+    try:
+        return datetime.strptime(str(value or '').strip(), '%Y-%m-%d').date()
+    except Exception:
+        return default_date or datetime.now().date()
+
+
+def normalize_sales_submission_status(value, default=''):
+    raw_value = str(value or '').strip().lower()
+    aliases = {
+        'submitted': 'submitted',
+        'submit': 'submitted',
+        'pending': 'submitted',
+        'approved': 'approved',
+        'approve': 'approved',
+        'rejected': 'rejected',
+        'reject': 'rejected',
+    }
+    return aliases.get(raw_value, default)
+
+
+def normalize_sales_submission_business_type(value, default=''):
+    raw_value = str(value or '').strip().lower()
+    aliases = {
+        'movie': 'movie',
+        'movies': 'movie',
+        'cinema': 'movie',
+        'cinemas': 'movie',
+        'bus': 'bus',
+        'buses': 'bus',
+        'route': 'bus',
+        'routes': 'bus',
+        'transport': 'bus',
+    }
+    return aliases.get(raw_value, default)
+
+
+def sales_submission_badge_class(status):
+    status_value = normalize_sales_submission_status(status)
+    return {
+        'submitted': 'warning',
+        'approved': 'success',
+        'rejected': 'danger',
+    }.get(status_value, 'secondary')
+
+
+def sales_submission_business_type_label(value):
+    business_type = normalize_sales_submission_business_type(value)
+    return {
+        'movie': 'Cinema',
+        'bus': 'Bus',
+    }.get(business_type, 'Unknown')
+
+
+app.jinja_env.globals['sales_submission_badge_class'] = sales_submission_badge_class
+app.jinja_env.globals['sales_submission_business_type_label'] = sales_submission_business_type_label
+
+
+def get_sales_target_label(target, business_type):
+    business_type = normalize_sales_submission_business_type(business_type)
+    if business_type == 'movie':
+        return str(getattr(target, 'name', f'Cinema #{getattr(target, "id", "-")}'))
+    if business_type == 'bus':
+        return f"{getattr(target, 'origin', 'Unknown')} -> {getattr(target, 'destination', 'Unknown')}"
+    return f"Target #{getattr(target, 'id', '-')}"
+
+
+def get_operator_sales_targets(user, business_type):
+    business_type = normalize_sales_submission_business_type(business_type)
+    if business_type == 'movie':
+        return Cinema.query.filter_by(operator_id=user.id).order_by(Cinema.name).all()
+    if business_type == 'bus':
+        return BusRoute.query.filter_by(operator_id=user.id).order_by(BusRoute.origin, BusRoute.destination, BusRoute.departure_time).all()
+    return []
+
+
+def get_operator_sales_target(user, business_type, target_id):
+    business_type = normalize_sales_submission_business_type(business_type)
+    if not target_id:
+        return None
+
+    if business_type == 'movie':
+        query = Cinema.query.filter_by(id=target_id)
+        if not getattr(user, 'is_admin', False):
+            query = query.filter_by(operator_id=user.id)
+        return query.first()
+
+    if business_type == 'bus':
+        query = BusRoute.query.filter_by(id=target_id)
+        if not getattr(user, 'is_admin', False):
+            query = query.filter_by(operator_id=user.id)
+        return query.first()
+
+    return None
+
+
+def build_operator_sales_target_options(user, business_type):
+    business_type = normalize_sales_submission_business_type(business_type)
+    targets = get_operator_sales_targets(user, business_type)
+    options = []
+
+    for target in targets:
+        if business_type == 'movie':
+            options.append({
+                'id': target.id,
+                'label': target.name,
+                'subtitle': target.location or 'No location',
+            })
+        elif business_type == 'bus':
+            options.append({
+                'id': target.id,
+                'label': f'{target.origin} -> {target.destination}',
+                'subtitle': f'{target.bus_number or "No bus number"} | {target.departure_time.strftime("%I:%M %p")}',
+            })
+
+    return options
+
+
+def build_sales_submission_summary(business_type, target, date_from, date_to):
+    business_type = normalize_sales_submission_business_type(business_type)
+    if business_type not in ('movie', 'bus'):
+        raise ValueError('Invalid business type for sales summary.')
+
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+
+    start_dt = datetime.combine(date_from, datetime.min.time())
+    end_dt = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
+    completed_statuses = ('completed', 'paid', 'succeeded', 'captured')
+
+    if business_type == 'movie':
+        bookings = MovieBooking.query.join(Showtime, MovieBooking.showtime_id == Showtime.id).filter(
+            Showtime.cinema_id == target.id
+        ).all()
+    else:
+        bookings = BusBooking.query.join(BusSchedule, BusBooking.schedule_id == BusSchedule.id).filter(
+            BusSchedule.route_id == target.id
+        ).all()
+
+    bookings_by_id = {booking.id: booking for booking in bookings}
+    eligible_booking_ids = list(bookings_by_id.keys())
+
+    paid_transactions = []
+    if eligible_booking_ids:
+        paid_transactions = PaymentTransaction.query.filter(
+            PaymentTransaction.booking_type == business_type,
+            PaymentTransaction.booking_id.in_(eligible_booking_ids),
+            PaymentTransaction.payment_status.in_(completed_statuses),
+            PaymentTransaction.created_at >= start_dt,
+            PaymentTransaction.created_at < end_dt,
+        ).order_by(PaymentTransaction.created_at.asc()).all()
+
+    paid_entries = []
+    for transaction in paid_transactions:
+        booking = bookings_by_id.get(transaction.booking_id)
+        if not booking:
+            continue
+
+        if business_type == 'movie':
+            showtime = booking.showtime
+            paid_entries.append({
+                'booking_reference': transaction.booking_reference,
+                'customer_name': getattr(getattr(booking, 'user', None), 'name', None),
+                'amount': float(transaction.amount or 0),
+                'payment_method': transaction.payment_method,
+                'paid_at': transaction.created_at.isoformat(),
+                'movie_title': showtime.movie.title if showtime and showtime.movie else None,
+                'show_date': showtime.show_date.isoformat() if showtime and showtime.show_date else None,
+                'show_time': showtime.show_time.strftime('%I:%M %p') if showtime and showtime.show_time else None,
+            })
+        else:
+            schedule = booking.schedule
+            route = schedule.route if schedule else None
+            paid_entries.append({
+                'booking_reference': transaction.booking_reference,
+                'customer_name': getattr(getattr(booking, 'user', None), 'name', None),
+                'amount': float(transaction.amount or 0),
+                'payment_method': transaction.payment_method,
+                'paid_at': transaction.created_at.isoformat(),
+                'route_label': f'{route.origin} -> {route.destination}' if route else None,
+                'travel_date': schedule.travel_date.isoformat() if schedule and schedule.travel_date else None,
+            })
+
+    if business_type == 'movie':
+        refunded_bookings = MovieBooking.query.join(Showtime, MovieBooking.showtime_id == Showtime.id).filter(
+            Showtime.cinema_id == target.id,
+            MovieBooking.payment_status == 'refunded',
+            MovieBooking.refunded_at.isnot(None),
+            MovieBooking.refunded_at >= start_dt,
+            MovieBooking.refunded_at < end_dt,
+        ).order_by(MovieBooking.refunded_at.asc()).all()
+    else:
+        refunded_bookings = BusBooking.query.join(BusSchedule, BusBooking.schedule_id == BusSchedule.id).filter(
+            BusSchedule.route_id == target.id,
+            BusBooking.payment_status == 'refunded',
+            BusBooking.refunded_at.isnot(None),
+            BusBooking.refunded_at >= start_dt,
+            BusBooking.refunded_at < end_dt,
+        ).order_by(BusBooking.refunded_at.asc()).all()
+
+    refund_entries = []
+    for booking in refunded_bookings:
+        if business_type == 'movie':
+            showtime = booking.showtime
+            refund_entries.append({
+                'booking_reference': booking.booking_reference,
+                'customer_name': getattr(getattr(booking, 'user', None), 'name', None),
+                'amount': float(booking.total_amount or 0),
+                'refunded_at': booking.refunded_at.isoformat() if booking.refunded_at else None,
+                'movie_title': showtime.movie.title if showtime and showtime.movie else None,
+            })
+        else:
+            schedule = booking.schedule
+            route = schedule.route if schedule else None
+            refund_entries.append({
+                'booking_reference': booking.booking_reference,
+                'customer_name': getattr(getattr(booking, 'user', None), 'name', None),
+                'amount': float(booking.total_amount or 0),
+                'refunded_at': booking.refunded_at.isoformat() if booking.refunded_at else None,
+                'route_label': f'{route.origin} -> {route.destination}' if route else None,
+            })
+
+    gross_amount = round(sum(float(transaction.amount or 0) for transaction in paid_transactions), 2)
+    refund_amount = round(sum(float(booking.total_amount or 0) for booking in refunded_bookings), 2)
+
+    return {
+        'business_type': business_type,
+        'target_id': target.id,
+        'target_label': get_sales_target_label(target, business_type),
+        'date_from': date_from,
+        'date_to': date_to,
+        'gross_amount': gross_amount,
+        'refund_amount': refund_amount,
+        'net_amount': round(gross_amount - refund_amount, 2),
+        'booking_count': len({transaction.booking_id for transaction in paid_transactions}),
+        'transaction_count': len(paid_transactions),
+        'refund_count': len(refunded_bookings),
+        'paid_entries': paid_entries,
+        'refund_entries': refund_entries,
+    }
+
+
+def serialize_sales_submission_snapshot(summary):
+    snapshot = dict(summary or {})
+    if isinstance(snapshot.get('date_from'), datetime):
+        snapshot['date_from'] = snapshot['date_from'].date().isoformat()
+    elif snapshot.get('date_from'):
+        snapshot['date_from'] = snapshot['date_from'].isoformat()
+
+    if isinstance(snapshot.get('date_to'), datetime):
+        snapshot['date_to'] = snapshot['date_to'].date().isoformat()
+    elif snapshot.get('date_to'):
+        snapshot['date_to'] = snapshot['date_to'].isoformat()
+
+    return json.dumps(snapshot, ensure_ascii=False)
+
+
+def get_operator_sales_submission_page_context(user, business_type):
+    business_type = normalize_sales_submission_business_type(business_type)
+    today = datetime.now().date()
+    targets = build_operator_sales_target_options(user, business_type)
+    selected_target_id = request.args.get('target_id', type=int)
+    if not selected_target_id and targets:
+        selected_target_id = int(targets[0]['id'])
+
+    date_from = parse_report_date(request.args.get('date_from'), today)
+    date_to = parse_report_date(request.args.get('date_to'), date_from)
+    if date_to < date_from:
+        date_to = date_from
+
+    selected_target = get_operator_sales_target(user, business_type, selected_target_id) if selected_target_id else None
+    preview = build_sales_submission_summary(business_type, selected_target, date_from, date_to) if selected_target else None
+    submissions = SalesSubmission.query.filter_by(
+        operator_id=user.id,
+        business_type=business_type
+    ).order_by(SalesSubmission.submitted_at.desc(), SalesSubmission.created_at.desc()).all()
+
+    return {
+        'targets': targets,
+        'selected_target_id': selected_target_id,
+        'date_from': date_from,
+        'date_to': date_to,
+        'preview': preview,
+        'submissions': submissions,
+    }
+
+
+def create_operator_sales_submission(user, business_type, target_id, date_from, date_to):
+    business_type = normalize_sales_submission_business_type(business_type)
+    if date_to < date_from:
+        date_to = date_from
+
+    target = get_operator_sales_target(user, business_type, target_id)
+    if not target:
+        return None, 'The selected target was not found or is not assigned to your account.'
+
+    existing = SalesSubmission.query.filter(
+        SalesSubmission.operator_id == user.id,
+        SalesSubmission.business_type == business_type,
+        SalesSubmission.target_id == target.id,
+        SalesSubmission.date_from == date_from,
+        SalesSubmission.date_to == date_to,
+        SalesSubmission.status.in_(['submitted', 'approved'])
+    ).first()
+    if existing:
+        return None, 'A sales submission for that target and date range already exists.'
+
+    summary = build_sales_submission_summary(business_type, target, date_from, date_to)
+    if summary['transaction_count'] <= 0 and summary['refund_count'] <= 0:
+        return None, 'No paid transactions or refunds were found for the selected date range.'
+
+    submission = SalesSubmission(
+        operator_id=user.id,
+        business_type=business_type,
+        target_id=target.id,
+        target_label=summary['target_label'],
+        date_from=date_from,
+        date_to=date_to,
+        gross_amount=summary['gross_amount'],
+        refund_amount=summary['refund_amount'],
+        net_amount=summary['net_amount'],
+        booking_count=summary['booking_count'],
+        transaction_count=summary['transaction_count'],
+        refund_count=summary['refund_count'],
+        status='submitted',
+        snapshot_json=serialize_sales_submission_snapshot(summary),
+        submitted_at=datetime.now(),
+    )
+    db.session.add(submission)
+    db.session.commit()
+    return submission, None
 
 
 # ==================== EMAIL FUNCTIONS ====================
@@ -1084,10 +1547,13 @@ def build_ticket_qr_payload(booking_type, booking):
         elif bt == 'bus':
             schedule = booking.schedule
             route = schedule.route
+            route_duration = route.duration or format_route_duration(route.departure_time, route.arrival_time) or '-'
             lines.extend([
                 f"Route: {route.origin} -> {route.destination}",
                 f"Travel Date: {schedule.travel_date.strftime('%Y-%m-%d')}",
                 f"Departure: {route.departure_time.strftime('%I:%M %p')}",
+                f"Arrival: {route.arrival_time.strftime('%I:%M %p')}",
+                f"Duration: {route_duration}",
                 f"Passengers: {booking.num_tickets}",
                 f"Seats: {booking.seat_numbers or 'To be assigned'}",
             ])
@@ -1147,10 +1613,13 @@ def build_ticket_sms_body(booking_type, booking):
     else:
         schedule = booking.schedule
         route = schedule.route
+        route_duration = route.duration or format_route_duration(route.departure_time, route.arrival_time) or '-'
         lines.extend([
             f'Route: {route.origin} -> {route.destination}',
             f'Travel Date: {schedule.travel_date.strftime("%b %d, %Y")}',
             f'Departure: {route.departure_time.strftime("%I:%M %p")}',
+            f'Arrival: {route.arrival_time.strftime("%I:%M %p")}',
+            f'Duration: {route_duration}',
             f'Seats: {booking.seat_numbers or "To be assigned"}',
         ])
 
@@ -1163,6 +1632,7 @@ def build_ticket_sms_href(booking_type, booking):
 
 
 app.jinja_env.globals['ticket_sms_href'] = build_ticket_sms_href
+app.jinja_env.globals['cinema_layout_presets'] = CINEMA_LAYOUT_PRESETS
 
 
 def log_scan_event(operator_user=None, booking_type=None, booking=None, raw_input=None, scan_source='manual', result='error', message=None):
@@ -1443,6 +1913,7 @@ def send_booking_confirmation_email(user, booking_type, booking):
                 ("Travel Date", schedule.travel_date.strftime('%B %d, %Y')),
                 ("Departure", route.departure_time.strftime('%I:%M %p')),
                 ("Arrival", route.arrival_time.strftime('%I:%M %p')),
+                ("Duration", route.duration or format_route_duration(route.departure_time, route.arrival_time) or "-"),
                 ("Passengers", str(booking.num_tickets)),
                 ("Seats", booking.seat_numbers or "To be assigned"),
                 ("Amount Paid", f"PHP {booking.total_amount:.2f}"),
@@ -1544,6 +2015,8 @@ def send_booking_verified_email(user, booking_type, booking, verified_at=None):
                 ("Route", f"{route.origin} -> {route.destination}"),
                 ("Travel Date", schedule.travel_date.strftime('%b %d, %Y')),
                 ("Departure", route.departure_time.strftime('%I:%M %p')),
+                ("Arrival", route.arrival_time.strftime('%I:%M %p')),
+                ("Duration", route.duration or format_route_duration(route.departure_time, route.arrival_time) or "-"),
                 ("Seats", booking.seat_numbers or "To be assigned"),
                 ("Verified At", verified_at.strftime('%b %d, %Y %I:%M %p')),
             ]
@@ -1683,6 +2156,96 @@ def normalize_multi_value(values):
     return ', '.join(out) if out else None
 
 
+def normalize_cinema_layout_style(style):
+    style_value = str(style or '').strip().lower()
+    return style_value if style_value in CINEMA_LAYOUT_PRESETS else DEFAULT_CINEMA_LAYOUT_STYLE
+
+
+def clamp_int(value, default=0, minimum=0, maximum=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+
+    if parsed < minimum:
+        parsed = minimum
+    if maximum is not None and parsed > maximum:
+        parsed = maximum
+    return parsed
+
+
+def clamp_amount(value, default=0.0, minimum=0.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return parsed if parsed >= minimum else float(minimum)
+
+
+def format_route_duration(departure_time, arrival_time):
+    """Return a human-readable bus duration like '4h 30m'."""
+    if not departure_time or not arrival_time:
+        return None
+
+    today = datetime.now().date()
+    departure_dt = datetime.combine(today, departure_time)
+    arrival_dt = datetime.combine(today, arrival_time)
+
+    # Earlier or matching arrival means the trip reaches the destination the next day.
+    if arrival_dt <= departure_dt:
+        arrival_dt += timedelta(days=1)
+
+    total_minutes = int((arrival_dt - departure_dt).total_seconds() // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    parts = []
+
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+
+    return ' '.join(parts) if parts else '0m'
+
+
+app.jinja_env.globals['format_route_duration'] = format_route_duration
+
+
+def movie_row_letters_to_number(value):
+    letters = ''.join(ch for ch in str(value or '').strip().upper() if ch.isalpha())
+    if not letters:
+        return None
+
+    row_number = 0
+    for ch in letters:
+        row_number = (row_number * 26) + (ord(ch) - 64)
+    return row_number or None
+
+
+def normalize_movie_seat_code(value):
+    raw_value = str(value or '').strip().upper()
+    if not raw_value:
+        return ''
+
+    match = re.fullmatch(r'(\d+)-(\d+)', raw_value)
+    if match:
+        row_num = int(match.group(1))
+        col_num = int(match.group(2))
+        if row_num > 0 and col_num > 0:
+            return f'{row_num}-{col_num}'
+        return ''
+
+    match = re.fullmatch(r'([A-Z]+)\s*(\d+)', raw_value)
+    if not match:
+        return ''
+
+    row_num = movie_row_letters_to_number(match.group(1))
+    col_num = int(match.group(2))
+    if not row_num or col_num <= 0:
+        return ''
+
+    return f'{row_num}-{col_num}'
+
+
 def get_showtime_total_seats(showtime):
     """Return the seat capacity for a showtime (prefer cinema.total_seats)."""
     try:
@@ -1691,6 +2254,168 @@ def get_showtime_total_seats(showtime):
     except Exception:
         pass
     return int(showtime.available_seats or 0)
+
+
+def get_cinema_layout_config(cinema):
+    style = normalize_cinema_layout_style(getattr(cinema, 'seat_layout_style', None))
+    preset = CINEMA_LAYOUT_PRESETS.get(style, CINEMA_LAYOUT_PRESETS[DEFAULT_CINEMA_LAYOUT_STYLE])
+    return {
+        'style': style,
+        'label': preset['label'],
+        'description': preset['description'],
+        'segments': list(preset['segments']),
+        'screen_label': preset['screen_label'],
+        'offset_cycle': list(preset.get('offset_cycle') or [0]),
+        'vip_rows': clamp_int(
+            getattr(cinema, 'vip_rows', None),
+            default=preset.get('default_vip_rows', DEFAULT_CINEMA_VIP_ROWS),
+            minimum=0,
+        ),
+        'vip_surcharge': clamp_amount(
+            getattr(cinema, 'vip_surcharge', None),
+            default=DEFAULT_CINEMA_VIP_SURCHARGE,
+            minimum=0.0,
+        ),
+    }
+
+
+def build_cinema_seat_layout(target):
+    showtime = target if isinstance(target, Showtime) else None
+    cinema = showtime.cinema if showtime else target
+    layout_config = get_cinema_layout_config(cinema)
+    total_seats = get_showtime_total_seats(showtime) if showtime else clamp_int(getattr(cinema, 'total_seats', 0), minimum=0)
+    base_price = clamp_amount(getattr(showtime, 'price', 0.0) if showtime else 0.0, default=0.0, minimum=0.0)
+
+    segments = layout_config['segments'] or [10]
+    row_capacity = sum(segments) or 1
+    total_rows = max(1, math.ceil(total_seats / row_capacity)) if total_seats > 0 else 1
+    vip_rows = clamp_int(layout_config['vip_rows'], default=0, minimum=0, maximum=total_rows)
+    vip_start_row = total_rows - vip_rows + 1 if vip_rows > 0 else total_rows + 1
+    vip_surcharge = clamp_amount(layout_config['vip_surcharge'], default=0.0, minimum=0.0)
+    offset_cycle = layout_config['offset_cycle'] or [0]
+
+    seat_rows = []
+    seat_lookup = {}
+    seat_codes = []
+    vip_seats = set()
+
+    seats_created = 0
+    for row_num in range(1, total_rows + 1):
+        remaining = max(0, total_seats - seats_created)
+        row_size = min(row_capacity, remaining)
+        row_groups = []
+        col_num = 1
+        seats_in_row = []
+        is_vip_row = row_num >= vip_start_row
+
+        for group_size in segments:
+            seats_in_group = []
+            group_take = min(group_size, max(0, row_size - len(seats_in_row)))
+            for _seat_index in range(group_take):
+                code = f'{row_num}-{col_num}'
+                is_vip_seat = bool(row_size) and is_vip_row
+                seat_price = round(base_price + (vip_surcharge if is_vip_seat else 0.0), 2)
+                seat_data = {
+                    'code': code,
+                    'display_label': movie_seat_label_to_display(code),
+                    'row': row_num,
+                    'row_label': seat_row_to_letters(row_num),
+                    'col': col_num,
+                    'tier': 'vip' if is_vip_seat else 'regular',
+                    'is_vip': is_vip_seat,
+                    'price': seat_price,
+                }
+                seat_lookup[code] = seat_data
+                seat_codes.append(code)
+                seats_in_row.append(seat_data)
+                seats_in_group.append(seat_data)
+                if is_vip_seat:
+                    vip_seats.add(code)
+                col_num += 1
+            if seats_in_group:
+                row_groups.append(seats_in_group)
+            if len(seats_in_row) >= row_size:
+                break
+
+        seat_rows.append({
+            'row': row_num,
+            'row_label': seat_row_to_letters(row_num),
+            'groups': row_groups,
+            'seat_count': row_size,
+            'is_vip_row': bool(row_size) and is_vip_row,
+            # VIP rows should always begin at the first column position,
+            # even when the cinema layout uses staggered row offsets.
+            'offset_units': 0 if is_vip_row else offset_cycle[(row_num - 1) % len(offset_cycle)],
+        })
+        seats_created += row_size
+
+    return {
+        'style': layout_config['style'],
+        'style_label': layout_config['label'],
+        'description': layout_config['description'],
+        'screen_label': layout_config['screen_label'],
+        'segments': segments,
+        'row_capacity': row_capacity,
+        'rows': seat_rows,
+        'seat_codes': seat_codes,
+        'seat_lookup': seat_lookup,
+        'seat_prices': {code: seat['price'] for code, seat in seat_lookup.items()},
+        'vip_seats': vip_seats,
+        'vip_count': len(vip_seats),
+        'vip_rows': vip_rows,
+        'vip_surcharge': vip_surcharge,
+        'base_price': base_price,
+        'total_rows': total_rows,
+        'total_seats': total_seats,
+    }
+
+
+def summarize_movie_booking_selection(showtime, selected_seats=None):
+    layout = build_cinema_seat_layout(showtime)
+    selected_values = []
+
+    if isinstance(selected_seats, str):
+        selected_values = [s.strip() for s in selected_seats.split(',') if s and s.strip()]
+    elif isinstance(selected_seats, (list, tuple, set)):
+        selected_values = [str(s).strip() for s in selected_seats if s and str(s).strip()]
+
+    normalized_codes = []
+    invalid_codes = []
+    regular_codes = []
+    vip_codes = []
+    total_amount = 0.0
+
+    for seat_value in selected_values:
+        normalized_code = normalize_movie_seat_code(seat_value)
+        seat_data = layout['seat_lookup'].get(normalized_code)
+        if not seat_data:
+            invalid_codes.append(str(seat_value))
+            continue
+
+        normalized_codes.append(normalized_code)
+        total_amount += float(seat_data['price'])
+        if seat_data['is_vip']:
+            vip_codes.append(normalized_code)
+        else:
+            regular_codes.append(normalized_code)
+
+    return {
+        'layout': layout,
+        'selected_codes': normalized_codes,
+        'selected_labels': [movie_seat_label_to_display(code) for code in normalized_codes],
+        'regular_codes': regular_codes,
+        'regular_labels': [movie_seat_label_to_display(code) for code in regular_codes],
+        'regular_count': len(regular_codes),
+        'vip_codes': vip_codes,
+        'vip_labels': [movie_seat_label_to_display(code) for code in vip_codes],
+        'vip_count': len(vip_codes),
+        'invalid_codes': invalid_codes,
+        'ticket_count': len(normalized_codes),
+        'base_price': float(layout['base_price']),
+        'vip_surcharge': float(layout['vip_surcharge']),
+        'has_vip': bool(vip_codes),
+        'total_amount': round(total_amount, 2),
+    }
 
 
 def get_reserved_movie_seats(showtime_id, statuses=None):
@@ -1714,8 +2439,13 @@ def get_reserved_movie_seats(showtime_id, statuses=None):
         if b.seat_numbers:
             for s in b.seat_numbers.split(','):
                 s2 = (s or '').strip()
-                if s2:
-                    reserved.add(s2)
+                if not s2:
+                    continue
+                normalized = normalize_movie_seat_code(s2)
+                if normalized:
+                    reserved.add(normalized)
+                else:
+                    unknown += 1
         else:
             unknown += int(b.num_tickets or 0)
 
@@ -1751,10 +2481,14 @@ def get_reserved_bus_seats(schedule_id, statuses=None):
     return reserved, unknown
 
 
-def is_valid_showtime_seat_label(seat_label, total_seats, cols=10):
+def is_valid_showtime_seat_label(seat_label, total_seats=None, cols=10, valid_codes=None):
     """Validate 'row-col' label within 1..total_seats given fixed column count."""
+    normalized = normalize_movie_seat_code(seat_label)
+    if valid_codes is not None:
+        return bool(normalized and normalized in set(valid_codes))
+
     try:
-        parts = str(seat_label).split('-')
+        parts = str(normalized or '').split('-')
         if len(parts) != 2:
             return False
         r = int(parts[0])
@@ -1785,7 +2519,10 @@ def seat_row_to_letters(row_num):
 def movie_seat_label_to_display(seat_label):
     """Convert internal movie seat code 'row-col' to user label like 'A1'."""
     try:
-        parts = str(seat_label or '').strip().split('-')
+        normalized = normalize_movie_seat_code(seat_label)
+        if not normalized:
+            return str(seat_label or '').strip().upper()
+        parts = normalized.split('-')
         if len(parts) != 2:
             return str(seat_label or '').strip()
         row = int(parts[0])
@@ -2079,6 +2816,8 @@ def movie_detail(movie_id):
 @regular_user_only
 def book_movie(showtime_id):
     showtime = Showtime.query.get_or_404(showtime_id)
+    seat_layout = build_cinema_seat_layout(showtime)
+    valid_seat_codes = set(seat_layout['seat_codes'])
 
     if is_showtime_departed(showtime):
         flash('This showtime has already started or passed. Please choose another showtime.', 'error')
@@ -2106,7 +2845,8 @@ def book_movie(showtime_id):
             return redirect(url_for('book_movie', showtime_id=showtime_id))
 
         # Validate seat selection: parse and ensure count matches
-        selected = [s.strip() for s in seat_numbers.split(',') if s and s.strip()]
+        selected = [normalize_movie_seat_code(s) for s in seat_numbers.split(',') if s and s.strip()]
+        selected = [s for s in selected if s]
         if len(selected) != num_tickets:
             flash(f'Please select exactly {num_tickets} seat(s).', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
@@ -2117,7 +2857,7 @@ def book_movie(showtime_id):
             return redirect(url_for('book_movie', showtime_id=showtime_id))
 
         # Validate seat labels are within cinema capacity
-        invalid = [s for s in selected if not is_valid_showtime_seat_label(s, total_seats, cols=10)]
+        invalid = [s for s in selected if not is_valid_showtime_seat_label(s, valid_codes=valid_seat_codes)]
         if invalid:
             flash(f'Invalid seat selection: {", ".join(movie_seat_label_to_display(s) for s in invalid)}.', 'error')
             return redirect(url_for('book_movie', showtime_id=showtime_id))
@@ -2131,7 +2871,8 @@ def book_movie(showtime_id):
             )
             return redirect(url_for('book_movie', showtime_id=showtime_id))
         
-        total_amount = num_tickets * float(showtime.price or 0)
+        selection_summary = summarize_movie_booking_selection(showtime, selected)
+        total_amount = float(selection_summary['total_amount'])
         booking_ref = generate_booking_reference()
         seat_numbers_normalized = ','.join(selected)
         
@@ -2151,7 +2892,15 @@ def book_movie(showtime_id):
     total_seats = get_showtime_total_seats(showtime)
     reserved_seats, reserved_unknown = get_reserved_movie_seats(showtime_id, statuses=['pending', 'paid', 'completed'])
     remaining = max(0, int(total_seats) - len(reserved_seats) - int(reserved_unknown))
-    return render_template('movies/book.html', showtime=showtime, cinema_total_seats=total_seats, seats_remaining=remaining)
+    return render_template(
+        'movies/book.html',
+        showtime=showtime,
+        cinema_total_seats=total_seats,
+        seats_remaining=remaining,
+        seat_layout=seat_layout,
+        seat_price_map=seat_layout['seat_prices'],
+        vip_seat_codes=sorted(list(seat_layout['vip_seats'])),
+    )
 
 
 # ==================== ROUTES - BUS ====================
@@ -2312,10 +3061,17 @@ def payment(booking_type, booking_id):
     if booking.user_id != current_user.id:
         flash('Unauthorized access.', 'error')
         return redirect(url_for('index'))
-    
-    return render_template('payment/checkout.html', 
-                         booking=booking, 
-                         booking_type=booking_type)
+
+    booking_price_summary = None
+    if booking_type == 'movie':
+        booking_price_summary = summarize_movie_booking_selection(booking.showtime, booking.seat_numbers)
+
+    return render_template(
+        'payment/checkout.html',
+        booking=booking,
+        booking_type=booking_type,
+        booking_price_summary=booking_price_summary
+    )
 
 
 @app.route('/create-checkout-session', methods=['POST'])
@@ -2525,6 +3281,8 @@ def payment_bank_pending():
 def get_booked_seats():
     data = request.get_json()
     showtime_id = data.get('showtime_id')
+    showtime = Showtime.query.get_or_404(showtime_id)
+    seat_layout = build_cinema_seat_layout(showtime)
     
     # Consider any booking that is pending, paid or completed as reserved for seat selection
     booked_seats = []
@@ -2534,7 +3292,11 @@ def get_booked_seats():
     except Exception as e:
         print(f"[Seats] Error fetching booked seats: {e}")
 
-    return jsonify({'booked_seats': booked_seats})
+    return jsonify({
+        'booked_seats': booked_seats,
+        'layout_style': seat_layout['style'],
+        'vip_seats': sorted(list(seat_layout['vip_seats'])),
+    })
 
 
 @app.route('/api/showtime-seats/<int:showtime_id>', methods=['GET'])
@@ -2553,18 +3315,10 @@ def api_showtime_seats(showtime_id):
     }
     """
     showtime = Showtime.query.get_or_404(showtime_id)
-    # Use cinema total seats if available, otherwise fallback to showtime.available_seats
-    cinema_total = None
-    try:
-        cinema_total = showtime.cinema.total_seats if showtime.cinema and showtime.cinema.total_seats else None
-    except Exception:
-        cinema_total = None
-
-    total_seats = int(cinema_total or (showtime.available_seats or 0))
-    # Default layout: 10 columns
-    cols = 10
-    import math
-    rows = math.ceil(total_seats / cols) if total_seats > 0 else 1
+    seat_layout = build_cinema_seat_layout(showtime)
+    total_seats = int(seat_layout['total_seats'] or 0)
+    cols = int(seat_layout['row_capacity'] or 0)
+    rows = int(seat_layout['total_rows'] or 1)
 
     # Gather reserved seats (pending/paid/completed)
     booked = []
@@ -2574,18 +3328,8 @@ def api_showtime_seats(showtime_id):
     except Exception as e:
         print(f"[API] Error collecting booked seats for showtime {showtime_id}: {e}")
 
-    # Generate full seat list using row-col labels 'r-c'
-    all_seats = []
-    for r in range(1, rows + 1):
-        for c in range(1, cols + 1):
-            label = f"{r}-{c}"
-            all_seats.append(label)
-            if len(all_seats) >= total_seats:
-                break
-        if len(all_seats) >= total_seats:
-            break
-
     booked_set = set(booked)
+    all_seats = list(seat_layout['seat_codes'])
     available = [s for s in all_seats if s not in booked_set]
 
     return jsonify({
@@ -2593,9 +3337,22 @@ def api_showtime_seats(showtime_id):
         'cinema_total_seats': total_seats,
         'cols': cols,
         'rows': rows,
+        'layout_style': seat_layout['style'],
+        'layout_label': seat_layout['style_label'],
+        'vip_surcharge': seat_layout['vip_surcharge'],
+        'vip_seats': sorted(list(seat_layout['vip_seats'])),
         'booked_seats': sorted(list(booked_set)),
         'available_seats': available,
-        'available_count': len(available)
+        'available_count': len(available),
+        'row_layout': [
+            {
+                'row': row['row'],
+                'label': row['row_label'],
+                'is_vip_row': row['is_vip_row'],
+                'groups': [[seat['code'] for seat in group] for group in row['groups']],
+            }
+            for row in seat_layout['rows']
+        ]
     }), 200
 
 
@@ -2922,7 +3679,8 @@ def payment_success_page(booking_type, booking_id):
         "payment/success.html",
         booking=booking,
         booking_type=booking_type,
-        qr_ticket=get_qr_ticket_context(booking_type, booking)
+        qr_ticket=get_qr_ticket_context(booking_type, booking),
+        booking_price_summary=summarize_movie_booking_selection(booking.showtime, booking.seat_numbers) if booking_type == 'movie' else None
     )
 
 
@@ -3589,16 +4347,25 @@ def get_latest_email_status_map(user_id):
 def build_booking_seat_history_context(booking_type, booking):
     booking_type = booking_type if booking_type in ('movie', 'bus') else infer_booking_type(booking)
     if booking_type == 'movie':
-        total_seats = get_showtime_total_seats(booking.showtime)
+        seat_layout = build_cinema_seat_layout(booking.showtime)
         reserved_seats, _unknown = get_reserved_movie_seats(booking.showtime_id, statuses=['pending', 'paid', 'completed'])
-        selected_seats = [s.strip() for s in str(booking.seat_numbers or '').split(',') if s and s.strip()]
+        selected_seats = [
+            normalize_movie_seat_code(s)
+            for s in str(booking.seat_numbers or '').split(',')
+            if s and str(s).strip()
+        ]
+        selected_seats = [s for s in selected_seats if s]
         return {
             'title': f"{booking.showtime.movie.title} Seat Map",
             'subtitle': f"{booking.showtime.cinema.name} on {booking.showtime.show_date.strftime('%b %d, %Y')} at {booking.showtime.show_time.strftime('%I:%M %p')}",
-            'all_seats': [movie_seat_label_to_display(f"{row}-{col}") for row in range(1, ((int(total_seats or 0) - 1) // 10) + 2) for col in range(1, 11)][:int(total_seats or 0)],
-            'reserved_seats': {movie_seat_label_to_display(seat) for seat in reserved_seats},
-            'selected_seats': {movie_seat_label_to_display(seat) for seat in selected_seats},
-            'raw_selected_seats': selected_seats,
+            'layout_style': seat_layout['style_label'],
+            'layout_rows': seat_layout['rows'],
+            'all_seats': [movie_seat_label_to_display(seat) for seat in seat_layout['seat_codes']],
+            'reserved_seats': set(reserved_seats),
+            'selected_seats': set(selected_seats),
+            'vip_seats': set(seat_layout['vip_seats']),
+            'raw_selected_seats': [movie_seat_label_to_display(seat) for seat in selected_seats],
+            'vip_surcharge': seat_layout['vip_surcharge'],
         }
 
     total_seats = int(booking.schedule.route.total_seats or booking.schedule.available_seats or 0)
@@ -3762,6 +4529,47 @@ def bus_operator_dashboard():
     )
 
 
+@app.route('/bus-operator/sales-submissions')
+@login_required
+@bus_operator_required
+def bus_operator_sales_submissions():
+    context = get_operator_sales_submission_page_context(current_user, 'bus')
+    return render_template(
+        'operator/sales_submissions.html',
+        operator_base='bus_operator/base.html',
+        page_title='Bus Sales Submissions - TicketHub',
+        page_heading='Bus Sales Submission',
+        page_description='Generate and submit remittance reports from paid bus transactions.',
+        target_label='Route',
+        submit_endpoint='submit_bus_operator_sales_submission',
+        back_endpoint='bus_operator_dashboard',
+        business_type='bus',
+        **context,
+    )
+
+
+@app.route('/bus-operator/sales-submissions/submit', methods=['POST'])
+@login_required
+@bus_operator_required
+def submit_bus_operator_sales_submission():
+    target_id = request.form.get('target_id', type=int)
+    date_from = parse_report_date(request.form.get('date_from'))
+    date_to = parse_report_date(request.form.get('date_to'), date_from)
+    submission, error_message = create_operator_sales_submission(current_user, 'bus', target_id, date_from, date_to)
+
+    if error_message:
+        flash(error_message, 'error')
+    else:
+        flash(f'Bus sales submission {submission.id} was submitted successfully.', 'success')
+
+    return redirect(url_for(
+        'bus_operator_sales_submissions',
+        target_id=target_id,
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+    ))
+
+
 @app.route('/cinema-operator')
 @login_required
 @cinema_operator_required
@@ -3799,6 +4607,78 @@ def cinema_operator_dashboard():
         recent_scan_logs=recent_scan_logs,
         failed_scan_logs=failed_scan_logs
     )
+
+
+@app.route('/cinema-operator/cinemas')
+@login_required
+@cinema_operator_required
+def cinema_operator_cinemas():
+    cinemas = Cinema.query.filter_by(operator_id=current_user.id).order_by(Cinema.name).all()
+    return render_template('cinema_operator/cinemas.html', cinemas=cinemas)
+
+
+@app.route('/cinema-operator/cinemas/<int:cinema_id>/edit', methods=['GET', 'POST'])
+@login_required
+@cinema_operator_required
+def cinema_operator_edit_cinema(cinema_id):
+    cinema = Cinema.query.get_or_404(cinema_id)
+
+    if not current_user.is_admin and cinema.operator_id != current_user.id:
+        flash('You can only manage seat formation for cinemas assigned to you.', 'error')
+        return redirect(url_for('cinema_operator_cinemas'))
+
+    if request.method == 'POST':
+        cinema.total_seats = clamp_int(request.form.get('total_seats'), default=cinema.total_seats or 100, minimum=1)
+        cinema.seat_layout_style = normalize_cinema_layout_style(request.form.get('seat_layout_style'))
+        cinema.vip_rows = clamp_int(request.form.get('vip_rows'), default=cinema.vip_rows or DEFAULT_CINEMA_VIP_ROWS, minimum=0)
+        cinema.vip_surcharge = clamp_amount(request.form.get('vip_surcharge'), default=cinema.vip_surcharge or DEFAULT_CINEMA_VIP_SURCHARGE, minimum=0.0)
+
+        db.session.commit()
+        flash('Cinema seat formation updated successfully!', 'success')
+        return redirect(url_for('cinema_operator_cinemas'))
+
+    return render_template('cinema_operator/edit_cinema.html', cinema=cinema)
+
+
+@app.route('/cinema-operator/sales-submissions')
+@login_required
+@cinema_operator_required
+def cinema_operator_sales_submissions():
+    context = get_operator_sales_submission_page_context(current_user, 'movie')
+    return render_template(
+        'operator/sales_submissions.html',
+        operator_base='cinema_operator/base.html',
+        page_title='Cinema Sales Submissions - TicketHub',
+        page_heading='Cinema Sales Submission',
+        page_description='Generate and submit remittance reports from paid cinema transactions.',
+        target_label='Cinema',
+        submit_endpoint='submit_cinema_operator_sales_submission',
+        back_endpoint='cinema_operator_dashboard',
+        business_type='movie',
+        **context,
+    )
+
+
+@app.route('/cinema-operator/sales-submissions/submit', methods=['POST'])
+@login_required
+@cinema_operator_required
+def submit_cinema_operator_sales_submission():
+    target_id = request.form.get('target_id', type=int)
+    date_from = parse_report_date(request.form.get('date_from'))
+    date_to = parse_report_date(request.form.get('date_to'), date_from)
+    submission, error_message = create_operator_sales_submission(current_user, 'movie', target_id, date_from, date_to)
+
+    if error_message:
+        flash(error_message, 'error')
+    else:
+        flash(f'Cinema sales submission {submission.id} was submitted successfully.', 'success')
+
+    return redirect(url_for(
+        'cinema_operator_sales_submissions',
+        target_id=target_id,
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+    ))
 
 
 @app.route('/operator/qr-scanner', methods=['GET', 'POST'])
@@ -3891,6 +4771,66 @@ def operator_qr_scanner():
 def admin_transactions():
     """Render admin transactions page (client-side fetches /api/transactions)."""
     return render_template('admin/transactions.html')
+
+
+@app.route('/admin/sales-submissions')
+@login_required
+@admin_required
+def admin_sales_submissions():
+    selected_status = normalize_sales_submission_status(request.args.get('status'), default='')
+    selected_business_type = normalize_sales_submission_business_type(request.args.get('business_type'), default='')
+
+    submissions_query = SalesSubmission.query
+    if selected_status:
+        submissions_query = submissions_query.filter_by(status=selected_status)
+    if selected_business_type:
+        submissions_query = submissions_query.filter_by(business_type=selected_business_type)
+
+    submissions = submissions_query.order_by(SalesSubmission.submitted_at.desc(), SalesSubmission.created_at.desc()).all()
+    status_counts = {
+        'submitted': SalesSubmission.query.filter_by(status='submitted').count(),
+        'approved': SalesSubmission.query.filter_by(status='approved').count(),
+        'rejected': SalesSubmission.query.filter_by(status='rejected').count(),
+    }
+
+    return render_template(
+        'admin/sales_submissions.html',
+        submissions=submissions,
+        selected_status=selected_status,
+        selected_business_type=selected_business_type,
+        status_counts=status_counts,
+    )
+
+
+@app.route('/admin/sales-submissions/<int:submission_id>/review', methods=['POST'])
+@login_required
+@admin_required
+def admin_review_sales_submission(submission_id):
+    submission = SalesSubmission.query.get_or_404(submission_id)
+    action = str(request.form.get('action') or '').strip().lower()
+    review_note = str(request.form.get('review_note') or '').strip()
+    redirect_status = normalize_sales_submission_status(request.form.get('status_filter'), default='')
+    redirect_business_type = normalize_sales_submission_business_type(request.form.get('business_type_filter'), default='')
+
+    if normalize_sales_submission_status(submission.status) != 'submitted':
+        flash('This sales submission has already been reviewed.', 'warning')
+        return redirect(url_for('admin_sales_submissions', status=redirect_status, business_type=redirect_business_type))
+
+    if action not in ('approve', 'reject'):
+        flash('Invalid review action.', 'error')
+        return redirect(url_for('admin_sales_submissions', status=redirect_status, business_type=redirect_business_type))
+
+    submission.status = normalize_sales_submission_status('approved' if action == 'approve' else 'rejected')
+    submission.reviewed_at = datetime.now()
+    submission.reviewed_by_id = current_user.id
+    submission.review_note = review_note[:255] if review_note else None
+    db.session.commit()
+
+    flash(
+        f"Sales submission {submission.id} {('approved' if action == 'approve' else 'rejected')} successfully.",
+        'success' if action == 'approve' else 'warning'
+    )
+    return redirect(url_for('admin_sales_submissions', status=redirect_status, business_type=redirect_business_type))
 
 
 @app.route('/admin/email-deliveries/<int:delivery_id>/retry', methods=['POST'])
@@ -4106,6 +5046,9 @@ def admin_add_cinema():
         total_seats = int(request.form.get('total_seats', 100))
         operator_id = request.form.get('operator_id')
         operator_id = int(operator_id) if operator_id else None
+        seat_layout_style = normalize_cinema_layout_style(request.form.get('seat_layout_style'))
+        vip_rows = clamp_int(request.form.get('vip_rows'), default=DEFAULT_CINEMA_VIP_ROWS, minimum=0)
+        vip_surcharge = clamp_amount(request.form.get('vip_surcharge'), default=DEFAULT_CINEMA_VIP_SURCHARGE, minimum=0.0)
         
         # Handle image upload
         image_filename = None
@@ -4116,7 +5059,16 @@ def admin_add_cinema():
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 image_filename = filename
         
-        cinema = Cinema(name=name, location=location, total_seats=total_seats, operator_id=operator_id, image=image_filename)
+        cinema = Cinema(
+            name=name,
+            location=location,
+            total_seats=total_seats,
+            operator_id=operator_id,
+            image=image_filename,
+            seat_layout_style=seat_layout_style,
+            vip_rows=vip_rows,
+            vip_surcharge=vip_surcharge,
+        )
         db.session.add(cinema)
         db.session.commit()
         
@@ -4125,6 +5077,30 @@ def admin_add_cinema():
     
     operators = User.query.filter((User.is_cinema_operator == True) | (User.is_admin == True)).all()
     return render_template('admin/cinemas/add.html', operators=operators)
+
+
+@app.route('/admin/cinemas/edit/<int:cinema_id>', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def admin_edit_cinema(cinema_id):
+    cinema = Cinema.query.get_or_404(cinema_id)
+    operators = User.query.filter((User.is_cinema_operator == True) | (User.is_admin == True)).all()
+
+    if request.method == 'POST':
+        cinema.name = request.form.get('name')
+        cinema.location = request.form.get('location')
+        cinema.total_seats = int(request.form.get('total_seats', 100))
+        operator_id = request.form.get('operator_id')
+        cinema.operator_id = int(operator_id) if operator_id else None
+        cinema.seat_layout_style = normalize_cinema_layout_style(request.form.get('seat_layout_style'))
+        cinema.vip_rows = clamp_int(request.form.get('vip_rows'), default=DEFAULT_CINEMA_VIP_ROWS, minimum=0)
+        cinema.vip_surcharge = clamp_amount(request.form.get('vip_surcharge'), default=DEFAULT_CINEMA_VIP_SURCHARGE, minimum=0.0)
+
+        db.session.commit()
+        flash('Cinema updated successfully!', 'success')
+        return redirect(url_for('admin_cinemas'))
+
+    return render_template('admin/cinemas/edit.html', cinema=cinema, operators=operators)
 
 
 # Admin - Bus Routes Management
@@ -4149,20 +5125,11 @@ def admin_add_bus_route():
         bus_type = request.form.get('bus_type')
         departure_time = datetime.strptime(request.form.get('departure_time'), '%H:%M').time()
         arrival_time = datetime.strptime(request.form.get('arrival_time'), '%H:%M').time()
-        duration = request.form.get('duration')
+        duration = format_route_duration(departure_time, arrival_time)
         price = float(request.form.get('price'))
         total_seats = int(request.form.get('total_seats', 40))
         amenities = request.form.get('amenities')
-        
-        # Handle image upload
-        image_filename = None
-        if 'image' in request.files:
-            file = request.files['image']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                image_filename = filename
-        
+
         route = BusRoute(
             origin=origin,
             destination=destination,
@@ -4175,7 +5142,6 @@ def admin_add_bus_route():
             price=price,
             total_seats=total_seats,
             amenities=amenities,
-            image=image_filename
         )
         db.session.add(route)
         db.session.commit()
@@ -4203,18 +5169,11 @@ def admin_edit_bus_route(route_id):
         route.bus_type = request.form.get('bus_type')
         route.departure_time = datetime.strptime(request.form.get('departure_time'), '%H:%M').time()
         route.arrival_time = datetime.strptime(request.form.get('arrival_time'), '%H:%M').time()
-        route.duration = request.form.get('duration')
+        route.duration = format_route_duration(route.departure_time, route.arrival_time)
         route.price = float(request.form.get('price'))
         route.total_seats = int(request.form.get('total_seats', 40))
         route.amenities = request.form.get('amenities')
         route.is_active = 'is_active' in request.form
-
-        if 'image' in request.files:
-            file = request.files['image']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                route.image = filename
         
         db.session.commit()
         flash('Bus route updated successfully!', 'success')
@@ -4388,6 +5347,16 @@ def run_schema_migrations():
                     'cancellation_reason': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN cancellation_reason VARCHAR(255)",
                     'refund_reference': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN refund_reference VARCHAR(255)",
                     'refunded_at': f"ALTER TABLE {BusBooking.__table__.name} ADD COLUMN refunded_at DATETIME",
+                },
+            }
+        ),
+        (
+            'cinema_layout_columns',
+            {
+                Cinema.__table__.name: {
+                    'seat_layout_style': f"ALTER TABLE {Cinema.__table__.name} ADD COLUMN seat_layout_style VARCHAR(40) DEFAULT '{DEFAULT_CINEMA_LAYOUT_STYLE}'",
+                    'vip_rows': f"ALTER TABLE {Cinema.__table__.name} ADD COLUMN vip_rows INTEGER DEFAULT {DEFAULT_CINEMA_VIP_ROWS}",
+                    'vip_surcharge': f"ALTER TABLE {Cinema.__table__.name} ADD COLUMN vip_surcharge FLOAT DEFAULT {DEFAULT_CINEMA_VIP_SURCHARGE}",
                 },
             }
         ),

@@ -42,7 +42,6 @@
 <div class="container">
 <div class="row g-4 justify-content-center">
 
-<!-- BOOKING SUMMARY -->
 <div class="col-lg-6">
     <div class="card mb-4">
         <div class="card-body p-4">
@@ -56,16 +55,43 @@
                     <span>Number of Tickets:</span>
                     <strong>{{ booking.num_tickets }}</strong>
                 </div>
+
+                {% if booking_type == 'movie' and booking_price_summary %}
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>Seat Design:</span>
+                        <strong>{{ booking_price_summary.layout.style_label }}</strong>
+                    </div>
+                    {% if booking.seat_numbers %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>Seats:</span>
+                            <strong>{{ booking_price_summary.selected_labels|join(', ') }}</strong>
+                        </div>
+                    {% endif %}
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>Regular Seats:</span>
+                        <strong>{{ booking_price_summary.regular_count }}</strong>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>VIP Seats:</span>
+                        <strong>{{ booking_price_summary.vip_count }}</strong>
+                    </div>
+                    {% if booking_price_summary.vip_count %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>VIP Add-on:</span>
+                            <strong>&#8369;{{ "%.2f"|format(booking_price_summary.vip_count * booking_price_summary.vip_surcharge) }}</strong>
+                        </div>
+                    {% endif %}
+                {% endif %}
+
                 <div class="d-flex justify-content-between mb-2">
                     <span>Total Amount:</span>
-                    <strong class="text-primary">₱{{ "%.2f"|format(booking.total_amount) }}</strong>
+                    <strong class="text-primary">&#8369;{{ "%.2f"|format(booking.total_amount) }}</strong>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- PAYMENT BOX -->
 <div class="col-lg-6">
 <div class="card">
 <div class="card-body p-4">
@@ -73,7 +99,6 @@
 <h5 class="fw-bold mb-4">Select Payment Method</h5>
 
 <div class="d-grid gap-2">
-    <!-- CARD -->
     <div class="form-check">
         <input class="form-check-input" type="radio" name="payment_method" id="card_payment" value="card" checked>
         <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="card_payment">
@@ -83,7 +108,6 @@
         </label>
     </div>
 
-    <!-- GCASH -->
     <div class="form-check">
         <input class="form-check-input" type="radio" name="payment_method" id="gcash_payment" value="gcash">
         <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="gcash_payment">
@@ -93,7 +117,6 @@
         </label>
     </div>
 
-    <!-- MAYA -->
     <div class="form-check">
         <input class="form-check-input" type="radio" name="payment_method" id="maya_payment" value="maya">
         <label class="form-check-label payment-method-btn btn btn-outline-primary w-100 text-start" for="maya_payment">
@@ -104,7 +127,6 @@
     </div>
 </div>
 
-<!-- PAYMENT DETAILS -->
 <div id="payment-details" class="mt-4">
     <div id="card-details" class="payment-detail-section">
         <div class="alert alert-info mb-3">
@@ -128,7 +150,6 @@
     </div>
 </div>
 
-<!-- PROCEED BUTTON -->
 <button id="proceed-payment" class="btn btn-primary btn-lg w-100 mt-4">
     <span id="button-text">Continue with PayMongo Checkout</span>
     <span id="loading-spinner" class="loading-spinner">
@@ -138,8 +159,6 @@
 </button>
 
 <div id="error-message" class="alert alert-danger mt-3 d-none"></div>
-
-<!-- GCash flow simplified: no QR modal (always use checkout page) -->
 
 </div>
 </div>
@@ -154,14 +173,10 @@
 <script>
 const paymentMethods = ['card', 'gcash', 'maya'];
 
-// Handle payment method selection
 paymentMethods.forEach(method => {
     document.getElementById(`${method}_payment`).addEventListener('change', function() {
-        // Hide all details
         document.querySelectorAll('.payment-detail-section').forEach(el => el.classList.add('d-none'));
-        // Show selected method details
         document.getElementById(`${method}-details`).classList.remove('d-none');
-        // Update button label for PayMongo Checkout Session flow
         const btnText = document.getElementById('button-text');
         btnText.textContent = method === 'gcash'
             ? 'Proceed with GCash Checkout'
@@ -169,10 +184,9 @@ paymentMethods.forEach(method => {
     });
 });
 
-// Handle payment submission
 document.getElementById('proceed-payment').addEventListener('click', function() {
     const selectedMethod = document.querySelector('input[name="payment_method"]:checked')?.value;
-    
+
     if (!selectedMethod) {
         showError('Please select a payment method');
         return;
@@ -185,13 +199,11 @@ function processPayment(method) {
     const button = document.getElementById('proceed-payment');
     const buttonText = document.getElementById('button-text');
     const spinner = document.getElementById('loading-spinner');
-    
-    // Show loading state
+
     button.disabled = true;
     buttonText.classList.add('d-none');
     spinner.classList.add('show');
 
-    // Redirect flow: backend creates a checkout session and redirects to PayMongo Checkout.
     const params = new URLSearchParams({
         booking_type: '{{ booking_type }}',
         booking_id: '{{ booking.id }}',
@@ -201,15 +213,14 @@ function processPayment(method) {
     window.location.href = `/payment-ewallet-pending?${params.toString()}`;
 }
 
-
-
 function showError(message) {
     const errorDiv = document.getElementById('error-message');
     errorDiv.textContent = message;
     errorDiv.classList.remove('d-none');
-    
+
     setTimeout(() => {
         errorDiv.classList.add('d-none');
     }, 5000);
-}</script>
+}
+</script>
 {% endblock %}

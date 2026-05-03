@@ -1,0 +1,105 @@
+{% extends 'cinema_operator/base.html' %}
+
+{% block title %}Edit Seat Formation - Cinema Operator{% endblock %}
+
+{% block operator_content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+    <div>
+        <h2 class="fw-bold mb-0">Edit Seat Formation</h2>
+        <div class="text-muted">{{ cinema.name }}{% if cinema.location %} | {{ cinema.location }}{% endif %}</div>
+    </div>
+    <a href="{{ url_for('cinema_operator_cinemas') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>Back to My Cinemas
+    </a>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body p-4">
+                <form method="POST" action="{{ url_for('cinema_operator_edit_cinema', cinema_id=cinema.id) }}">
+                    <div class="row g-4">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Total Seats *</label>
+                            <input
+                                type="number"
+                                class="form-control"
+                                name="total_seats"
+                                value="{{ cinema.total_seats }}"
+                                min="1"
+                                required
+                            >
+                            <small class="text-muted">This sets the booking capacity for the cinema.</small>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Seat Design *</label>
+                            <select class="form-select" name="seat_layout_style" required>
+                                {% for layout_key, layout_config in cinema_layout_presets.items() %}
+                                    <option value="{{ layout_key }}" {% if layout_key == (cinema.seat_layout_style or 'classic') %}selected{% endif %}>
+                                        {{ layout_config['label'] }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                            <small class="text-muted">This changes the seat formation shown to movie customers.</small>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">VIP Rows</label>
+                            <input
+                                type="number"
+                                class="form-control"
+                                name="vip_rows"
+                                min="0"
+                                value="{{ cinema.vip_rows or 0 }}"
+                            >
+                            <small class="text-muted">Set to 0 if this cinema does not use VIP seating.</small>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">VIP Add-on (&#8369;)</label>
+                            <input
+                                type="number"
+                                class="form-control"
+                                name="vip_surcharge"
+                                min="0"
+                                step="0.01"
+                                value="{{ cinema.vip_surcharge or 0 }}"
+                            >
+                            <small class="text-muted">This amount is added when a customer picks a VIP seat.</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4">
+
+                    <div class="d-flex gap-3">
+                        <button type="submit" class="btn btn-primary px-4">
+                            <i class="bi bi-check-lg me-2"></i>Save Seat Formation
+                        </button>
+                        <a href="{{ url_for('cinema_operator_cinemas') }}" class="btn btn-outline-secondary">
+                            Cancel
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-body p-4">
+                {% set layout_meta = cinema_layout_presets.get(cinema.seat_layout_style or 'classic', cinema_layout_presets['classic']) %}
+                <h6 class="fw-bold mb-3">Current Setup</h6>
+                <div class="mb-2">
+                    <span class="badge text-dark border bg-light">{{ layout_meta['label'] }}</span>
+                </div>
+                <p class="text-muted small mb-3">{{ layout_meta['description'] }}</p>
+                <div class="small text-muted mb-2">Screen label: <span class="fw-semibold text-dark">{{ layout_meta['screen_label'] }}</span></div>
+                <div class="small text-muted mb-2">Current seats: <span class="fw-semibold text-dark">{{ cinema.total_seats }}</span></div>
+                <div class="small text-muted mb-2">Current VIP rows: <span class="fw-semibold text-dark">{{ cinema.vip_rows or 0 }}</span></div>
+                <div class="small text-muted">Current VIP add-on: <span class="fw-semibold text-dark">PHP {{ "%.2f"|format(cinema.vip_surcharge or 0) }}</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

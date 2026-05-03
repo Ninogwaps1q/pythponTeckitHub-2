@@ -1,0 +1,186 @@
+{% extends operator_base %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block operator_content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+    <div>
+        <h2 class="fw-bold mb-0">{{ page_heading }}</h2>
+        <div class="text-muted">{{ page_description }}</div>
+    </div>
+    <a href="{{ url_for(back_endpoint) }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
+    </a>
+</div>
+
+{% if targets %}
+<div class="row g-4 mb-4">
+    <div class="col-xl-5">
+        <div class="card">
+            <div class="card-body p-4">
+                <h5 class="fw-bold mb-3">Build Report</h5>
+                <form method="GET">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">{{ target_label }}</label>
+                        <select class="form-select" name="target_id" required>
+                            {% for target in targets %}
+                                <option value="{{ target.id }}" {% if selected_target_id == target.id %}selected{% endif %}>
+                                    {{ target.label }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            {% for target in targets if selected_target_id == target.id %}
+                                {{ target.subtitle }}
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Date From</label>
+                            <input type="date" class="form-control" name="date_from" value="{{ date_from.isoformat() }}" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Date To</label>
+                            <input type="date" class="form-control" name="date_to" value="{{ date_to.isoformat() }}" required>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-search me-2"></i>Preview Report
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-7">
+        <div class="card h-100">
+            <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
+                    <div>
+                        <h5 class="fw-bold mb-1">Preview Summary</h5>
+                        {% if preview %}
+                            <div class="text-muted">{{ preview.target_label }} | {{ preview.date_from.strftime('%b %d, %Y') }} to {{ preview.date_to.strftime('%b %d, %Y') }}</div>
+                        {% else %}
+                            <div class="text-muted">Choose a target and date range to preview the report.</div>
+                        {% endif %}
+                    </div>
+                    {% if preview %}
+                        <span class="badge text-bg-dark">{{ preview.transaction_count }} paid transaction{% if preview.transaction_count != 1 %}s{% endif %}</span>
+                    {% endif %}
+                </div>
+
+                {% if preview %}
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-4">
+                            <div class="stat-card h-100">
+                                <div class="stat-value">PHP {{ "%.2f"|format(preview.gross_amount) }}</div>
+                                <div class="stat-label">Gross Sales</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="stat-card h-100">
+                                <div class="stat-value">PHP {{ "%.2f"|format(preview.refund_amount) }}</div>
+                                <div class="stat-label">Refunds</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="stat-card h-100">
+                                <div class="stat-value">PHP {{ "%.2f"|format(preview.net_amount) }}</div>
+                                <div class="stat-label">Net Sales</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="small text-muted mb-4">
+                        Booking count: <strong class="text-dark">{{ preview.booking_count }}</strong> |
+                        Refund count: <strong class="text-dark">{{ preview.refund_count }}</strong>
+                    </div>
+
+                    {% if preview.transaction_count > 0 or preview.refund_count > 0 %}
+                        <form method="POST" action="{{ url_for(submit_endpoint) }}">
+                            <input type="hidden" name="target_id" value="{{ preview.target_id }}">
+                            <input type="hidden" name="date_from" value="{{ preview.date_from.isoformat() }}">
+                            <input type="hidden" name="date_to" value="{{ preview.date_to.isoformat() }}">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-send-check me-2"></i>Submit This Report
+                            </button>
+                        </form>
+                    {% else %}
+                        <div class="alert alert-secondary mb-0">No paid transactions or refunds were found for this range.</div>
+                    {% endif %}
+                {% else %}
+                    <div class="alert alert-light mb-0">The report preview will be generated from paid transactions and refunded bookings only.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Submitted Reports</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if submissions %}
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>{{ target_label }}</th>
+                            <th>Period</th>
+                            <th>Gross</th>
+                            <th>Refunds</th>
+                            <th>Net</th>
+                            <th>Status</th>
+                            <th>Submitted</th>
+                            <th>Review</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for submission in submissions %}
+                            <tr>
+                                <td>{{ submission.id }}</td>
+                                <td>{{ submission.target_label }}</td>
+                                <td>{{ submission.date_from.strftime('%b %d, %Y') }} to {{ submission.date_to.strftime('%b %d, %Y') }}</td>
+                                <td>PHP {{ "%.2f"|format(submission.gross_amount) }}</td>
+                                <td>PHP {{ "%.2f"|format(submission.refund_amount) }}</td>
+                                <td class="fw-semibold">PHP {{ "%.2f"|format(submission.net_amount) }}</td>
+                                <td><span class="badge bg-{{ sales_submission_badge_class(submission.status) }}">{{ submission.status.title() }}</span></td>
+                                <td>{{ submission.submitted_at.strftime('%b %d, %Y %I:%M %p') if submission.submitted_at else '-' }}</td>
+                                <td>
+                                    {% if submission.reviewed_by_user %}
+                                        <div>{{ submission.reviewed_by_user.name }}</div>
+                                        <div class="small text-muted">{{ submission.reviewed_at.strftime('%b %d, %Y %I:%M %p') if submission.reviewed_at else '' }}</div>
+                                        {% if submission.review_note %}
+                                            <div class="small text-muted">{{ submission.review_note }}</div>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="text-muted">Waiting for admin</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="text-center py-5 text-muted">No sales reports submitted yet.</div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body text-center py-5">
+        <i class="bi bi-folder-x text-muted" style="font-size: 3rem;"></i>
+        <h5 class="mt-3">No Assigned {{ target_label }}s</h5>
+        <p class="text-muted mb-0">Ask the admin to assign a {{ target_label|lower }} to your account before submitting reports.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

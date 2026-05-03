@@ -6,7 +6,7 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="fw-bold mb-1">Cinemas</h2>
-        <p class="text-muted mb-0">Manage theater locations</p>
+        <p class="text-muted mb-0">Manage theater locations, operators, and seat designs</p>
     </div>
     <a href="{{ url_for('admin_add_cinema') }}" class="btn btn-primary">
         <i class="bi bi-plus-lg me-2"></i>Add Cinema
@@ -16,22 +16,46 @@
 <div class="row g-4">
     {% if cinemas %}
         {% for cinema in cinemas %}
-        <div class="col-md-6 col-lg-4">
-            <div class="card h-100">
-                <div class="card-body p-4">
-                    <div class="d-flex align-items-start justify-content-between mb-3">
-                        <div>
-                            <h5 class="fw-bold mb-1">{{ cinema.name }}</h5>
-                            <p class="text-muted small mb-0">
-                                <i class="bi bi-geo-alt me-1"></i>{{ cinema.location or 'No location' }}
-                            </p>
+            {% set layout_meta = cinema_layout_presets.get(cinema.seat_layout_style or 'classic', cinema_layout_presets['classic']) %}
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100">
+                    <div class="card-body p-4">
+                        <div class="d-flex align-items-start justify-content-between mb-3">
+                            <div>
+                                <h5 class="fw-bold mb-1">{{ cinema.name }}</h5>
+                                <p class="text-muted small mb-0">
+                                    <i class="bi bi-geo-alt me-1"></i>{{ cinema.location or 'No location' }}
+                                </p>
+                            </div>
+                            <span class="badge bg-primary rounded-pill">{{ cinema.total_seats }} seats</span>
                         </div>
-                        <span class="badge bg-primary rounded-pill">{{ cinema.total_seats }} seats</span>
+
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            <span class="badge text-dark border bg-light">{{ layout_meta['label'] }}</span>
+                            {% if (cinema.vip_rows or 0)|int > 0 %}
+                                <span class="badge bg-warning text-dark">{{ cinema.vip_rows }} VIP row{% if (cinema.vip_rows or 0)|int != 1 %}s{% endif %}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">No VIP</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="small text-muted mb-1">
+                            VIP add-on: &#8369;{{ "%.2f"|format(cinema.vip_surcharge or 0) }}
+                        </div>
+                        <div class="small text-muted mb-1">
+                            Assigned operator:
+                            <span class="fw-semibold text-dark">{{ cinema.operator.name if cinema.operator else 'Unassigned' }}</span>
+                        </div>
+                        <p class="text-muted small mb-3">{{ cinema.showtimes|length }} active showtimes</p>
+
+                        <div class="d-flex gap-2">
+                            <a href="{{ url_for('admin_edit_cinema', cinema_id=cinema.id) }}" class="btn btn-outline-primary btn-sm">
+                                <i class="bi bi-pencil me-1"></i>Edit
+                            </a>
+                        </div>
                     </div>
-                    <p class="text-muted small mb-0">{{ cinema.showtimes|length }} active showtimes</p>
                 </div>
             </div>
-        </div>
         {% endfor %}
     {% else %}
         <div class="col-12">

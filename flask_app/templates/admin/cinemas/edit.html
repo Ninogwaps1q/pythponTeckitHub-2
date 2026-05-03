@@ -1,6 +1,6 @@
 {% extends "admin/base.html" %}
 
-{% block title %}Add Cinema - Admin{% endblock %}
+{% block title %}Edit Cinema - Admin{% endblock %}
 
 {% block admin_content %}
 <div class="mb-4">
@@ -9,17 +9,17 @@
             <li class="breadcrumb-item">
                 <a href="{{ url_for('admin_cinemas') }}" class="text-decoration-none">Cinemas</a>
             </li>
-            <li class="breadcrumb-item active">Add Cinema</li>
+            <li class="breadcrumb-item active">Edit Cinema</li>
         </ol>
     </nav>
-    <h2 class="fw-bold">Add New Cinema</h2>
+    <h2 class="fw-bold">Edit Cinema</h2>
 </div>
 
 <div class="row">
     <div class="col-lg-8">
         <div class="card">
             <div class="card-body p-4">
-                <form method="POST" action="{{ url_for('admin_add_cinema') }}">
+                <form method="POST" action="{{ url_for('admin_edit_cinema', cinema_id=cinema.id) }}">
                     <div class="row g-4">
                         <div class="col-12">
                             <label class="form-label fw-semibold">Cinema Name *</label>
@@ -27,7 +27,7 @@
                                 type="text"
                                 class="form-control"
                                 name="name"
-                                placeholder="Enter cinema name"
+                                value="{{ cinema.name }}"
                                 required
                             >
                         </div>
@@ -38,7 +38,7 @@
                                 type="text"
                                 class="form-control"
                                 name="location"
-                                placeholder="Enter cinema location"
+                                value="{{ cinema.location }}"
                                 required
                             >
                         </div>
@@ -48,7 +48,7 @@
                             <select class="form-select" name="operator_id">
                                 <option value="">Unassigned</option>
                                 {% for operator in operators %}
-                                    <option value="{{ operator.id }}">{{ operator.name }} ({{ operator.email }})</option>
+                                    <option value="{{ operator.id }}" {% if cinema.operator_id == operator.id %}selected{% endif %}>{{ operator.name }} ({{ operator.email }})</option>
                                 {% endfor %}
                             </select>
                             <small class="text-muted">Cinema bookings for this cinema will be handled by the selected operator.</small>
@@ -60,7 +60,7 @@
                                 type="number"
                                 class="form-control"
                                 name="total_seats"
-                                placeholder="e.g. 120"
+                                value="{{ cinema.total_seats }}"
                                 min="1"
                                 required
                             >
@@ -70,7 +70,7 @@
                             <label class="form-label fw-semibold">Seat Design *</label>
                             <select class="form-select" name="seat_layout_style" required>
                                 {% for layout_key, layout_config in cinema_layout_presets.items() %}
-                                    <option value="{{ layout_key }}" {% if layout_key == 'classic' %}selected{% endif %}>
+                                    <option value="{{ layout_key }}" {% if layout_key == (cinema.seat_layout_style or 'classic') %}selected{% endif %}>
                                         {{ layout_config['label'] }}
                                     </option>
                                 {% endfor %}
@@ -84,7 +84,7 @@
                                 class="form-control"
                                 name="vip_rows"
                                 min="0"
-                                value="1"
+                                value="{{ cinema.vip_rows or 0 }}"
                             >
                             <small class="text-muted">Set to 0 to disable VIP seating for this cinema.</small>
                         </div>
@@ -97,7 +97,7 @@
                                 name="vip_surcharge"
                                 min="0"
                                 step="0.01"
-                                value="120"
+                                value="{{ cinema.vip_surcharge or 0 }}"
                             >
                             <small class="text-muted">This amount is added on top of the normal movie ticket price.</small>
                         </div>
@@ -108,7 +108,7 @@
                     <div class="d-flex gap-3">
                         <button type="submit" class="btn btn-primary px-4">
                             <i class="bi bi-check-lg me-2"></i>
-                            Add Cinema
+                            Update Cinema
                         </button>
                         <a href="{{ url_for('admin_cinemas') }}" class="btn btn-outline-secondary">
                             Cancel
@@ -124,10 +124,9 @@
             <div class="card-body p-4">
                 <h6 class="fw-bold mb-3">Tips</h6>
                 <ul class="text-muted small mb-0">
-                    <li class="mb-2">Choose a seat design that matches the theater you want to present to users.</li>
                     <li class="mb-2">Assign a cinema operator so movie bookings appear in the correct operator dashboard.</li>
+                    <li class="mb-2">Choose a seat design that matches the theater you want to present to users.</li>
                     <li class="mb-2">VIP rows are highlighted automatically on the booking page.</li>
-                    <li class="mb-2">VIP add-on pricing is added only when a user selects VIP seats.</li>
                     <li>Total seats should match the real room capacity for accurate availability.</li>
                 </ul>
             </div>

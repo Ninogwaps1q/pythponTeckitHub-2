@@ -1,0 +1,66 @@
+{% extends 'cinema_operator/base.html' %}
+
+{% block title %}My Cinemas - Cinema Operator{% endblock %}
+
+{% block operator_content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+    <div>
+        <h2 class="fw-bold mb-0">My Cinemas</h2>
+        <div class="text-muted">Manage the seat formation for your assigned cinemas.</div>
+    </div>
+    <a href="{{ url_for('cinema_operator_dashboard') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
+    </a>
+</div>
+
+<div class="row g-4">
+    {% if cinemas %}
+        {% for cinema in cinemas %}
+            {% set layout_meta = cinema_layout_presets.get(cinema.seat_layout_style or 'classic', cinema_layout_presets['classic']) %}
+            <div class="col-md-6 col-xl-4">
+                <div class="stat-card h-100">
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-1">{{ cinema.name }}</h5>
+                            <div class="text-muted small">{{ cinema.location or 'No location set' }}</div>
+                        </div>
+                        <span class="badge text-bg-dark">{{ cinema.total_seats }} seats</span>
+                    </div>
+
+                    <div class="mb-2">
+                        <span class="badge text-dark border bg-light">{{ layout_meta['label'] }}</span>
+                    </div>
+                    <p class="text-muted small mb-3">{{ layout_meta['description'] }}</p>
+
+                    <div class="small text-muted mb-1">
+                        VIP rows:
+                        <span class="fw-semibold text-dark">
+                            {% if (cinema.vip_rows or 0)|int > 0 %}
+                                {{ cinema.vip_rows }}
+                            {% else %}
+                                Disabled
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="small text-muted mb-3">
+                        VIP add-on:
+                        <span class="fw-semibold text-dark">PHP {{ "%.2f"|format(cinema.vip_surcharge or 0) }}</span>
+                    </div>
+
+                    <a href="{{ url_for('cinema_operator_edit_cinema', cinema_id=cinema.id) }}" class="btn btn-primary">
+                        <i class="bi bi-grid-3x3-gap me-2"></i>Edit Seat Formation
+                    </a>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <div class="col-12">
+            <div class="stat-card text-center py-5">
+                <i class="bi bi-building text-muted" style="font-size: 3rem;"></i>
+                <h5 class="mt-3 mb-2">No Cinemas Assigned</h5>
+                <p class="text-muted mb-0">Ask an admin to assign a cinema to your account so you can manage its seat formation.</p>
+            </div>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

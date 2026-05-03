@@ -1,0 +1,136 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Sales Submissions - Admin - TicketHub{% endblock %}
+
+{% block admin_content %}
+<div class="container-fluid py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="h3 mb-0">Sales Submissions</h1>
+            <div class="text-muted">Review operator-submitted cinema and bus remittance reports.</div>
+        </div>
+    </div>
+
+    <div class="row g-4 mb-4">
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-value">{{ status_counts.submitted }}</div>
+                <div class="stat-label">Submitted</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-value">{{ status_counts.approved }}</div>
+                <div class="stat-label">Approved</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-value">{{ status_counts.rejected }}</div>
+                <div class="stat-label">Rejected</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="GET" class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Status</label>
+                    <select class="form-select" name="status" onchange="this.form.submit()">
+                        <option value="">All statuses</option>
+                        <option value="submitted" {% if selected_status == 'submitted' %}selected{% endif %}>Submitted</option>
+                        <option value="approved" {% if selected_status == 'approved' %}selected{% endif %}>Approved</option>
+                        <option value="rejected" {% if selected_status == 'rejected' %}selected{% endif %}>Rejected</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Business Type</label>
+                    <select class="form-select" name="business_type" onchange="this.form.submit()">
+                        <option value="">All types</option>
+                        <option value="movie" {% if selected_business_type == 'movie' %}selected{% endif %}>Cinema</option>
+                        <option value="bus" {% if selected_business_type == 'bus' %}selected{% endif %}>Bus</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">Apply Filters</button>
+                        <a href="{{ url_for('admin_sales_submissions') }}" class="btn btn-outline-secondary">Reset</a>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body p-0">
+            {% if submissions %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Operator</th>
+                                <th>Type</th>
+                                <th>Target</th>
+                                <th>Period</th>
+                                <th>Counts</th>
+                                <th>Gross</th>
+                                <th>Refunds</th>
+                                <th>Net</th>
+                                <th>Status</th>
+                                <th>Review</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for submission in submissions %}
+                                <tr>
+                                    <td>{{ submission.id }}</td>
+                                    <td>
+                                        <div>{{ submission.operator.name if submission.operator else 'Unknown' }}</div>
+                                        <div class="small text-muted">{{ submission.submitted_at.strftime('%b %d, %Y %I:%M %p') if submission.submitted_at else '' }}</div>
+                                    </td>
+                                    <td>{{ sales_submission_business_type_label(submission.business_type) }}</td>
+                                    <td>{{ submission.target_label }}</td>
+                                    <td>{{ submission.date_from.strftime('%b %d, %Y') }} to {{ submission.date_to.strftime('%b %d, %Y') }}</td>
+                                    <td>
+                                        <div>{{ submission.transaction_count }} transaction{% if submission.transaction_count != 1 %}s{% endif %}</div>
+                                        <div class="small text-muted">{{ submission.refund_count }} refund{% if submission.refund_count != 1 %}s{% endif %}</div>
+                                    </td>
+                                    <td>PHP {{ "%.2f"|format(submission.gross_amount) }}</td>
+                                    <td>PHP {{ "%.2f"|format(submission.refund_amount) }}</td>
+                                    <td class="fw-semibold">PHP {{ "%.2f"|format(submission.net_amount) }}</td>
+                                    <td><span class="badge bg-{{ sales_submission_badge_class(submission.status) }}">{{ submission.status|title }}</span></td>
+                                    <td style="min-width: 240px;">
+                                        {% if submission.status == 'submitted' %}
+                                            <form method="POST" action="{{ url_for('admin_review_sales_submission', submission_id=submission.id) }}">
+                                                <input type="hidden" name="status_filter" value="{{ selected_status }}">
+                                                <input type="hidden" name="business_type_filter" value="{{ selected_business_type }}">
+                                                <div class="mb-2">
+                                                    <input type="text" class="form-control form-control-sm" name="review_note" placeholder="Optional note">
+                                                </div>
+                                                <div class="d-flex gap-2">
+                                                    <button type="submit" class="btn btn-sm btn-success" name="action" value="approve">Approve</button>
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger" name="action" value="reject">Reject</button>
+                                                </div>
+                                            </form>
+                                        {% else %}
+                                            <div>{{ submission.reviewed_by_user.name if submission.reviewed_by_user else 'Reviewed' }}</div>
+                                            <div class="small text-muted">{{ submission.reviewed_at.strftime('%b %d, %Y %I:%M %p') if submission.reviewed_at else '' }}</div>
+                                            {% if submission.review_note %}
+                                                <div class="small text-muted">{{ submission.review_note }}</div>
+                                            {% endif %}
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="text-center py-5 text-muted">No sales submissions found for the selected filters.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

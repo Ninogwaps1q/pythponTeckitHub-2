@@ -218,6 +218,9 @@
                 <a href="{{ url_for('admin_transactions') }}" class="nav-link {{ 'active' if request.endpoint == 'admin_transactions' }}">
                     <i class="bi bi-receipt"></i> Transactions
                 </a>
+                <a href="{{ url_for('admin_sales_submissions') }}" class="nav-link {{ 'active' if request.endpoint in ['admin_sales_submissions', 'admin_review_sales_submission'] }}">
+                    <i class="bi bi-journal-check"></i> Sales Submissions
+                </a>
             </nav>
             
             <nav class="nav-section mt-auto" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem;">

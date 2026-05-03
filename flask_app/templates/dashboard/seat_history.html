@@ -36,21 +36,61 @@
                     </div>
                 </div>
 
-                <div class="d-flex gap-3 flex-wrap mb-4">
-                    <span class="badge bg-success">Your seats</span>
-                    <span class="badge bg-danger">Reserved</span>
-                    <span class="badge bg-light text-dark border">Available</span>
-                </div>
+                {% if seat_context.layout_rows %}
+                    <div class="d-flex gap-3 flex-wrap mb-4">
+                        <span class="badge bg-success">Your seats</span>
+                        <span class="badge bg-danger">Reserved</span>
+                        <span class="badge bg-warning text-dark">VIP</span>
+                        <span class="badge bg-light text-dark border">Available</span>
+                    </div>
 
-                <div class="d-flex flex-wrap gap-2">
-                    {% for seat in seat_context.all_seats %}
-                        {% set is_selected = seat in seat_context.selected_seats %}
-                        {% set is_reserved = seat in seat_context.reserved_seats %}
-                        <span class="badge {% if is_selected %}bg-success{% elif is_reserved %}bg-danger{% else %}bg-light text-dark border{% endif %}" style="min-width:56px;padding:0.75rem 0.5rem;">
-                            {{ seat }}
-                        </span>
-                    {% endfor %}
-                </div>
+                    <div class="cinema-seat-map seat-layout-history">
+                        {% for row in seat_context.layout_rows %}
+                            {% if row.seat_count > 0 %}
+                                <div class="cinema-seat-row {% if row.is_vip_row %}is-vip-row{% endif %}" style="--row-offset: {{ row.offset_units }}px;">
+                                    <div class="cinema-row-label">{{ row.row_label }}</div>
+                                    <div class="cinema-row-groups">
+                                        {% for group in row.groups %}
+                                            <div class="cinema-seat-group">
+                                                {% for seat in group %}
+                                                    {% set is_selected = seat.code in seat_context.selected_seats %}
+                                                    {% set is_reserved = seat.code in seat_context.reserved_seats %}
+                                                    {% set is_vip = seat.code in seat_context.vip_seats %}
+                                                    <span class="cinema-seat history-seat {% if is_vip %}vip{% endif %} {% if is_selected %}selected{% elif is_reserved %}booked{% endif %}">
+                                                        <span class="cinema-seat-number">{{ seat.display_label }}</span>
+                                                        {% if is_vip %}
+                                                            <span class="cinema-seat-tier">VIP</span>
+                                                        {% endif %}
+                                                    </span>
+                                                {% endfor %}
+                                            </div>
+                                            {% if not loop.last %}
+                                                <div class="cinema-seat-aisle" aria-hidden="true"></div>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                    <div class="cinema-row-label cinema-row-label-end">{{ row.row_label }}</div>
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="d-flex gap-3 flex-wrap mb-4">
+                        <span class="badge bg-success">Your seats</span>
+                        <span class="badge bg-danger">Reserved</span>
+                        <span class="badge bg-light text-dark border">Available</span>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2">
+                        {% for seat in seat_context.all_seats %}
+                            {% set is_selected = seat in seat_context.selected_seats %}
+                            {% set is_reserved = seat in seat_context.reserved_seats %}
+                            <span class="badge {% if is_selected %}bg-success{% elif is_reserved %}bg-danger{% else %}bg-light text-dark border{% endif %}" style="min-width:56px;padding:0.75rem 0.5rem;">
+                                {{ seat }}
+                            </span>
+                        {% endfor %}
+                    </div>
+                {% endif %}
             </div>
         </div>
     </div>

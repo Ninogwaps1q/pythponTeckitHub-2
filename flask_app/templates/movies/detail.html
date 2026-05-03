@@ -3,7 +3,6 @@
 {% block title %}{{ movie.title }} - TicketHub{% endblock %}
 
 {% block content %}
-<!-- Movie Hero -->
 <section class="py-5" style="background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);">
     <div class="container">
         <div class="row g-5">
@@ -33,9 +32,9 @@
                         <span class="badge rounded-pill bg-warning text-dark">{{ first_rating }}</span>
                     {% endif %}
                 </div>
-                
+
                 <h1 class="fw-bold mb-3">{{ movie.title }}</h1>
-                
+
                 <div class="d-flex gap-4 mb-4 text-white-50">
                     {% if movie.duration %}
                         <span><i class="bi bi-clock me-2"></i>{{ movie.duration }} min</span>
@@ -44,9 +43,9 @@
                         <span><i class="bi bi-calendar-event me-2"></i>{{ movie.release_date.strftime('%B %d, %Y') }}</span>
                     {% endif %}
                 </div>
-                
+
                 <p class="lead mb-4" style="opacity: 0.9;">{{ movie.description or 'No description available.' }}</p>
-                
+
                 {% if movie.trailer_url %}
                     <a href="{{ movie.trailer_url }}" target="_blank" class="btn btn-outline-light me-3">
                         <i class="bi bi-play-fill me-2"></i>Watch Trailer
@@ -57,23 +56,21 @@
     </div>
 </section>
 
-<!-- Showtimes Section -->
 <section class="py-5">
     <div class="container">
         <h3 class="fw-bold mb-4">Select Showtime</h3>
-        
+
         {% if showtimes %}
             {% set dates = showtimes | map(attribute='show_date') | unique | list %}
-            
-            <!-- Date Tabs -->
+
             <ul class="nav nav-pills mb-4" id="dateTabs" role="tablist">
                 {% for date in dates %}
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link {% if loop.first %}active{% endif %} px-4 py-2 me-2" 
-                                id="date-{{ loop.index }}-tab" 
-                                data-bs-toggle="pill" 
-                                data-bs-target="#date-{{ loop.index }}" 
-                                type="button" 
+                        <button class="nav-link {% if loop.first %}active{% endif %} px-4 py-2 me-2"
+                                id="date-{{ loop.index }}-tab"
+                                data-bs-toggle="pill"
+                                data-bs-target="#date-{{ loop.index }}"
+                                type="button"
                                 role="tab">
                             <div class="text-center">
                                 <div class="small" style="color: #000;">{{ date.strftime('%a') }}</div>
@@ -83,15 +80,15 @@
                     </li>
                 {% endfor %}
             </ul>
-            
-            <!-- Showtime Cards -->
+
             <div class="tab-content" id="dateTabsContent">
                 {% for date in dates %}
-                    <div class="tab-pane fade {% if loop.first %}show active{% endif %}" 
-                         id="date-{{ loop.index }}" 
+                    <div class="tab-pane fade {% if loop.first %}show active{% endif %}"
+                         id="date-{{ loop.index }}"
                          role="tabpanel">
                         <div class="row g-4">
                             {% for showtime in showtimes if showtime.show_date == date %}
+                                {% set layout_meta = cinema_layout_presets.get(showtime.cinema.seat_layout_style or 'classic', cinema_layout_presets['classic']) %}
                                 <div class="col-md-6 col-lg-4">
                                     <div class="card h-100">
                                         <div class="card-body">
@@ -104,7 +101,14 @@
                                                 </div>
                                                 <span class="badge bg-success">Available</span>
                                             </div>
-                                            
+
+                                            <div class="d-flex flex-wrap gap-2 mb-3">
+                                                <span class="badge text-dark border bg-light">{{ layout_meta['label'] }}</span>
+                                                {% if (showtime.cinema.vip_rows or 0)|int > 0 %}
+                                                    <span class="badge bg-warning text-dark">VIP +&#8369;{{ "%.2f"|format(showtime.cinema.vip_surcharge or 0) }}</span>
+                                                {% endif %}
+                                            </div>
+
                                             <div class="d-flex align-items-center justify-content-between mb-3">
                                                 <div class="d-flex align-items-center">
                                                     <i class="bi bi-clock me-2 text-muted"></i>
@@ -112,10 +116,10 @@
                                                 </div>
                                                 <div class="text-end">
                                                     <div class="small text-muted">Price</div>
-                                                    <div class="fw-bold" style="color: var(--primary);">₱{{ "%.2f"|format(showtime.price) }}</div>
+                                                    <div class="fw-bold" style="color: var(--primary);">&#8369;{{ "%.2f"|format(showtime.price) }}</div>
                                                 </div>
                                             </div>
-                                            
+
                                             <div class="d-flex align-items-center justify-content-between">
                                                 <small class="text-muted">
                                                     <i class="bi bi-person-fill me-1"></i>

@@ -131,6 +131,54 @@
     </div>
     <div class="col-xl-5">
         <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Sales Remittance</h5>
+                <a href="{{ url_for('cinema_operator_sales_submissions') }}" class="btn btn-sm btn-outline-primary">Open</a>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">Generate a date-based cinema sales report from paid transactions, then submit it for admin review.</p>
+                <a href="{{ url_for('cinema_operator_sales_submissions') }}" class="btn btn-primary">
+                    <i class="bi bi-send-check me-2"></i>Submit Sales Report
+                </a>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">My Cinemas</h5>
+                <a href="{{ url_for('cinema_operator_cinemas') }}" class="btn btn-sm btn-outline-primary">Manage Seat Formation</a>
+            </div>
+            <div class="card-body p-0">
+                {% if cinemas %}
+                    <div class="list-group list-group-flush">
+                        {% for cinema in cinemas %}
+                            {% set layout_meta = cinema_layout_presets.get(cinema.seat_layout_style or 'classic', cinema_layout_presets['classic']) %}
+                            <div class="list-group-item">
+                                <div class="d-flex justify-content-between align-items-start gap-3">
+                                    <div>
+                                        <div class="fw-semibold">{{ cinema.name }}</div>
+                                        <div class="small text-muted">{{ cinema.location or 'No location set' }}</div>
+                                        <div class="small text-muted mt-1">
+                                            {{ layout_meta['label'] }} | {{ cinema.total_seats }} seats |
+                                            {% if (cinema.vip_rows or 0)|int > 0 %}
+                                                {{ cinema.vip_rows }} VIP row{% if (cinema.vip_rows or 0)|int != 1 %}s{% endif %}
+                                            {% else %}
+                                                No VIP rows
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <a href="{{ url_for('cinema_operator_edit_cinema', cinema_id=cinema.id) }}" class="btn btn-sm btn-primary">Edit</a>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-4 text-muted">No cinemas are assigned to your account yet.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mb-4">
             <div class="card-header">
                 <h5 class="mb-0">Recent Scan Activity</h5>
             </div>
